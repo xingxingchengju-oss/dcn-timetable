@@ -1,0 +1,11 @@
+code,title,section,instructor,day,time,duration,classroom,semester
+COMP3003,Data Communications,S1,Dr. Chan,Mon,10:00,2h,A101,2026S1
+COMP3003,Data Communications,S2,Dr. Chan,Wed,14:00,2h,A101,2026S1
+COMP3001,Operating Systems,S1,Dr. Lee,Tue,09:00,2h,B202,2026S1
+COMP3001,Operating Systems,S2,Dr. Lee,Thu,13:00,2h,B202,2026S1
+COMP2001,Data Structures,S1,Dr. Wong,Mon,08:00,2h,C303,2026S1
+COMP2001,Data Structures,S2,Dr. Wong,Fri,10:00,2h,C303,2026S1
+COMP4001,Machine Learning,S1,Dr. Lam,Tue,14:00,2h,D404,2026S1
+COMP4002,Computer Networks,S1,Dr. Chan,Thu,10:00,2h,A101,2026S1
+MATH2001,Discrete Mathematics,S1,Dr. Ng,Wed,08:00,2h,E505,2026S1
+MATH2001,Discrete Mathematics,S2,Dr. Ng,Fri,14:00,2h,E505,2026S1

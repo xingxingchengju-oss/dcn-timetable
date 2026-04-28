@@ -1,0 +1,5 @@
+username,password,role
+admin,admin123,admin
+student,stu123,student
+alice,alice456,student
+bob,bob789,student
