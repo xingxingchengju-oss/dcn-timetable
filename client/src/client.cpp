@@ -11,7 +11,7 @@
 #pragma comment(lib, "ws2_32.lib")
 
 #define DEFAULT_HOST "127.0.0.1"
-#define DEFAULT_PORT  8888
+#define DEFAULT_PORT  50000
 #define BUFFER_SIZE   8192
 
 SOCKET sock = INVALID_SOCKET;
@@ -31,28 +31,55 @@ bool sendLine(const std::string& line) {
     return sent != SOCKET_ERROR;
 }
 
-// ---- Receive full response (until RESULT END, OK, ERROR, SUCCESS, FAILURE, BYE) ----
+// ---- Receive full response (line-by-line, stop on terminal line) ----
+static std::string recvLeftover; // buffer surviving across calls
+
+static bool isTerminalLine(const std::string& line) {
+    if (line == "RESULT_END") return true;
+    if (line == "BYE")        return true;
+    if (line.substr(0, 3) == "OK|")          return true;
+    if (line.substr(0, 6) == "ERROR|")       return true;
+    if (line.substr(0, 8) == "SUCCESS|")     return true;
+    if (line.substr(0, 8) == "FAILURE|")     return true;
+    if (line.substr(0, 12) == "RESULT_NONE|") return true;
+    if (line.substr(0, 8) == "WELCOME|")     return true;
+    // HELP response ends when last INFO line seen (last line of HELP block)
+    if (line.find("QUIT") != std::string::npos &&
+        line.substr(0, 5) == "INFO|") return true;
+    return false;
+}
+
 std::string recvResponse() {
     std::string result;
     char buf[BUFFER_SIZE];
+
     while (true) {
+        // Process any lines already buffered
+        size_t pos;
+        while ((pos = recvLeftover.find('\n')) != std::string::npos) {
+            std::string line = recvLeftover.substr(0, pos);
+            recvLeftover.erase(0, pos + 1);
+            // strip \r
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+            result += line + "\n";
+            if (isTerminalLine(line)) return result;
+        }
+        // Need more data
         int bytes = recv(sock, buf, BUFFER_SIZE - 1, 0);
         if (bytes <= 0) return result;
         buf[bytes] = '\0';
-        result += buf;
-        // Check if response is complete
-        if (result.find("RESULT END\n") != std::string::npos) break;
-        if (result.find("RESULT NONE") != std::string::npos) break;
-        if (result.find("SUCCESS")     != std::string::npos) break;
-        if (result.find("FAILURE")     != std::string::npos) break;
-        if (result.find("ERROR")       != std::string::npos) break;
-        if (result.find("OK ")         != std::string::npos) break;
-        if (result.find("BYE")         != std::string::npos) break;
-        if (result.find("WELCOME")     != std::string::npos) break;
-        if (result.find("HELP ")       != std::string::npos &&
-            result.find("QUIT")        != std::string::npos) break;
+        recvLeftover += buf;
     }
-    return result;
+}
+
+// ---- Split a string by delimiter ----
+std::vector<std::string> splitFields(const std::string& s, char delim = '|') {
+    std::vector<std::string> out;
+    std::stringstream ss(s);
+    std::string tok;
+    while (std::getline(ss, tok, delim)) out.push_back(tok);
+    return out;
 }
 
 // ---- Pretty-print server response ----
@@ -60,18 +87,61 @@ void printResponse(const std::string& resp) {
     std::istringstream ss(resp);
     std::string line;
     while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
-        if (line.substr(0, 7) == "WELCOME") { printCyan(line + "\n"); }
-        else if (line.substr(0, 7) == "SUCCESS") { printGreen(line + "\n"); }
-        else if (line.substr(0, 7) == "FAILURE") { printRed(line + "\n"); }
-        else if (line.substr(0, 5) == "ERROR")   { printRed(line + "\n"); }
-        else if (line.substr(0, 2) == "OK")       { printGreen(line + "\n"); }
-        else if (line.substr(0, 3) == "BYE")      { printYellow(line + "\n"); }
-        else if (line.substr(0, 6) == "RESULT")   {
-            if (line == "RESULT BEGIN" || line == "RESULT END") { printYellow(line + "\n"); }
-            else { std::cout << "  " << line.substr(7) << "\n"; }
+
+        if (line.substr(0, 8) == "WELCOME|") {
+            auto f = splitFields(line);
+            printCyan(f.size() > 1 ? f[1] + "\n" : line + "\n");
         }
-        else { std::cout << line << "\n"; }
+        else if (line.substr(0, 8) == "SUCCESS|") {
+            auto f = splitFields(line);
+            printGreen("SUCCESS: " + (f.size() > 1 ? f[1] : "") + "\n");
+        }
+        else if (line.substr(0, 8) == "FAILURE|") {
+            auto f = splitFields(line);
+            printRed("FAILURE: " + (f.size() > 2 ? f[2] : (f.size() > 1 ? f[1] : "")) + "\n");
+        }
+        else if (line.substr(0, 6) == "ERROR|") {
+            auto f = splitFields(line);
+            std::string code = f.size() > 1 ? f[1] : "";
+            std::string msg  = f.size() > 2 ? f[2] : "";
+            printRed("ERROR [" + code + "]: " + msg + "\n");
+        }
+        else if (line.substr(0, 3) == "OK|") {
+            auto f = splitFields(line);
+            printGreen("OK: " + (f.size() > 1 ? f[1] : "") + "\n");
+        }
+        else if (line == "BYE") {
+            printYellow("BYE - Connection closing.\n");
+        }
+        else if (line == "RESULT_BEGIN") {
+            printYellow("--- Results ---\n");
+        }
+        else if (line == "RESULT_END") {
+            printYellow("--- End ---\n");
+        }
+        else if (line.substr(0, 12) == "RESULT_NONE|") {
+            auto f = splitFields(line);
+            printYellow("(no results) " + (f.size() > 1 ? f[1] : "") + "\n");
+        }
+        else if (line.substr(0, 7) == "RESULT|") {
+            // RESULT|code|title|section|instructor|day|time|duration|classroom|semester
+            auto f = splitFields(line);
+            if (f.size() >= 10) {
+                printf("  %-10s %-30s Sec:%-4s %-15s %s %s (%s) Room:%-6s %s\n",
+                    f[1].c_str(), f[2].c_str(), f[3].c_str(), f[4].c_str(),
+                    f[5].c_str(), f[6].c_str(), f[7].c_str(), f[8].c_str(), f[9].c_str());
+            } else {
+                std::cout << "  " << line.substr(7) << "\n";
+            }
+        }
+        else if (line.substr(0, 5) == "INFO|") {
+            std::cout << line.substr(5) << "\n";
+        }
+        else {
+            std::cout << line << "\n";
+        }
     }
 }
 
@@ -179,23 +249,23 @@ int main(int argc, char* argv[]) {
         }
         else if (choice == "1") {
             std::string code = promptInput("Enter course code (e.g. COMP3003): ");
-            sendLine("QUERY " + code);
+            sendLine("QUERY|" + code);
             printResponse(recvResponse());
         }
         else if (choice == "2") {
             std::string name = promptInput("Enter instructor name (partial ok): ");
-            sendLine("SEARCH_INSTRUCTOR " + name);
+            sendLine("SEARCH_INSTRUCTOR|" + name);
             printResponse(recvResponse());
         }
         else if (choice == "3") {
             std::string sem = promptInput("Enter semester (leave blank for all): ");
-            sendLine("LIST_ALL " + sem);
+            sendLine(sem.empty() ? "LIST_ALL" : "LIST_ALL|" + sem);
             printResponse(recvResponse());
         }
         else if (choice == "4") {
             std::string day  = promptInput("Enter day (e.g. Mon): ");
             std::string time = promptInput("Enter time (e.g. 10:00): ");
-            sendLine("SEARCH_TIME " + day + " " + time);
+            sendLine("SEARCH_TIME|" + day + "|" + time);
             printResponse(recvResponse());
         }
         else if (choice == "5" && isAdmin) {
@@ -209,7 +279,7 @@ int main(int argc, char* argv[]) {
             std::string dur   = promptInput("  Duration (e.g. 2h): ");
             std::string room  = promptInput("  Classroom:     ");
             std::string sem   = promptInput("  Semester:      ");
-            sendLine("ADD " + code+"|"+title+"|"+sec+"|"+instr+"|"+day+"|"+time+"|"+dur+"|"+room+"|"+sem);
+            sendLine("ADD|" + code+"|"+title+"|"+sec+"|"+instr+"|"+day+"|"+time+"|"+dur+"|"+room+"|"+sem);
             printResponse(recvResponse());
         }
         else if (choice == "6" && isAdmin) {
@@ -218,13 +288,13 @@ int main(int argc, char* argv[]) {
             std::cout << "Field to update: TITLE / INSTRUCTOR / DAY / TIME / DURATION / CLASSROOM / SEMESTER\n";
             std::string field = promptInput("Field:         ");
             std::string val   = promptInput("New Value:     ");
-            sendLine("UPDATE " + code + " " + sec + " " + field + " " + val);
+            sendLine("UPDATE|" + code + "|" + sec + "|" + field + "|" + val);
             printResponse(recvResponse());
         }
         else if (choice == "7" && isAdmin) {
             std::string code = promptInput("Course Code:   ");
             std::string sec  = promptInput("Section:       ");
-            sendLine("DELETE " + code + " " + sec);
+            sendLine("DELETE|" + code + "|" + sec);
             printResponse(recvResponse());
         }
         else if (choice == "8") {
@@ -236,12 +306,13 @@ int main(int argc, char* argv[]) {
             } else {
                 std::string user = promptInput("Username: ");
                 std::string pass = promptInput("Password: ");
-                sendLine("LOGIN " + user + " " + pass);
+                sendLine("LOGIN|" + user + "|" + pass);
                 std::string resp = recvResponse();
                 printResponse(resp);
-                if (resp.find("SUCCESS") != std::string::npos) {
+                // SUCCESS|admin  or  SUCCESS|student
+                if (resp.find("SUCCESS|") != std::string::npos) {
                     loggedIn = true;
-                    isAdmin  = (resp.find("admin") != std::string::npos);
+                    isAdmin  = (resp.find("SUCCESS|admin") != std::string::npos);
                 }
             }
         }

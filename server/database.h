@@ -28,6 +28,12 @@ struct Course {
                " | Sem: " + semester;
     }
 
+    std::string toProtocol() const {
+        return "RESULT|" + code + "|" + title + "|" + section + "|" +
+               instructor + "|" + day + "|" + time + "|" +
+               duration + "|" + classroom + "|" + semester;
+    }
+
     std::string toCSV() const {
         return code + "," + title + "," + section + "," +
                instructor + "," + day + "," + time + "," +

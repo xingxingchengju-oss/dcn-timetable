@@ -30,8 +30,12 @@ Makefile
 
 # Runtime data
 *.log
+logs/
 data/timetable.db
 data/*.db-journal
+# Stray CSV files created when server runs from wrong directory
+/timetable.csv
+/users.csv
 
 # OS
 Thumbs.db
