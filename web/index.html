@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Timetable Inquiry System</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-role="guest">
+
+  <header>
+    <div class="header-inner">
+      <div class="header-title">
+        <span class="header-logo" aria-hidden="true">&#9783;</span>
+        <h1>Timetable Inquiry System</h1>
+      </div>
+      <div class="header-right">
+        <span class="role-badge" id="role-badge">guest</span>
+        <button class="btn-secondary login-btn" id="login-btn"
+                onclick="openLoginModal()">Login</button>
+        <button class="btn-secondary logout-btn" id="logout-btn"
+                onclick="logout()">Logout</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- Tab bar -->
+    <div class="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="query"
+              onclick="switchTab('query')">Query</button>
+      <button class="tab-btn admin-tab" data-tab="admin"
+              onclick="switchTab('admin')">Admin</button>
+    </div>
+
+    <!-- Query tab — 2x2 grid of search cards -->
+    <div class="tab-panel active" id="tab-query">
+      <div class="query-grid">
+
+        <div class="card query-card">
+          <h3>Search by Course Code</h3>
+          <p class="hint">Exact or prefix match, case-insensitive (e.g. COMP3003).</p>
+          <div class="input-row">
+            <input type="text" id="q-code" placeholder="COMP3003">
+            <button class="btn-primary" onclick="doQuery(this)">Search</button>
+          </div>
+        </div>
+
+        <div class="card query-card">
+          <h3>Search by Instructor</h3>
+          <p class="hint">Partial name match, case-insensitive (e.g. Chan).</p>
+          <div class="input-row">
+            <input type="text" id="q-instructor" placeholder="Dr. Chan">
+            <button class="btn-primary" onclick="doSearchInstructor(this)">Search</button>
+          </div>
+        </div>
+
+        <div class="card query-card">
+          <h3>Search by Time Slot</h3>
+          <p class="hint">Pick a weekday and 24-hour start time.</p>
+          <div class="input-row">
+            <select id="q-day" aria-label="Day of week">
+              <option value="Mon">Monday</option>
+              <option value="Tue">Tuesday</option>
+              <option value="Wed">Wednesday</option>
+              <option value="Thu">Thursday</option>
+              <option value="Fri">Friday</option>
+            </select>
+            <input type="text" id="q-time" placeholder="10:00" style="max-width:100px">
+            <button class="btn-primary" onclick="doSearchTime(this)">Search</button>
+          </div>
+        </div>
+
+        <div class="card query-card">
+          <h3>List All Courses</h3>
+          <p class="hint">Leave blank for everything, or filter by semester.</p>
+          <div class="input-row">
+            <input type="text" id="q-semester" placeholder="2026S1 (optional)">
+            <button class="btn-primary" onclick="doListAll(this)">List All</button>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /tab-query -->
+
+    <!-- Admin tab — semantic field-width grids -->
+    <div class="tab-panel" id="tab-admin">
+
+      <div class="card">
+        <h3>Add Course</h3>
+        <p class="hint">Provide all 9 fields. Section identifies one offering of a course.</p>
+
+        <div class="add-row add-row-1">
+          <div class="form-group">
+            <label for="a-code">Code</label>
+            <input type="text" id="a-code" placeholder="COMP4001">
+          </div>
+          <div class="form-group">
+            <label for="a-title">Title</label>
+            <input type="text" id="a-title" placeholder="Advanced AI">
+          </div>
+          <div class="form-group">
+            <label for="a-section">Section</label>
+            <input type="text" id="a-section" placeholder="S1">
+          </div>
+        </div>
+
+        <div class="add-row add-row-2">
+          <div class="form-group">
+            <label for="a-instructor">Instructor</label>
+            <input type="text" id="a-instructor" placeholder="Dr. Wang">
+          </div>
+          <div class="form-group">
+            <label for="a-day">Day</label>
+            <select id="a-day">
+              <option value="Mon">Monday</option>
+              <option value="Tue">Tuesday</option>
+              <option value="Wed">Wednesday</option>
+              <option value="Thu">Thursday</option>
+              <option value="Fri">Friday</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="a-time">Time (HH:MM)</label>
+            <input type="text" id="a-time" placeholder="14:00">
+          </div>
+        </div>
+
+        <div class="add-row add-row-3">
+          <div class="form-group">
+            <label for="a-duration">Duration</label>
+            <input type="text" id="a-duration" placeholder="2h">
+          </div>
+          <div class="form-group">
+            <label for="a-classroom">Classroom</label>
+            <input type="text" id="a-classroom" placeholder="D401">
+          </div>
+          <div class="form-group">
+            <label for="a-semester">Semester</label>
+            <input type="text" id="a-semester" placeholder="2026S1">
+          </div>
+        </div>
+
+        <button class="btn-primary" onclick="doAdd(this)">Add Course</button>
+      </div>
+
+      <div class="card">
+        <h3>Update Field</h3>
+        <p class="hint">Change a single field of an existing course offering.</p>
+        <div class="update-row">
+          <div class="form-group">
+            <label for="u-code">Code</label>
+            <input type="text" id="u-code" placeholder="COMP3003">
+          </div>
+          <div class="form-group">
+            <label for="u-section">Section</label>
+            <input type="text" id="u-section" placeholder="S1">
+          </div>
+          <div class="form-group">
+            <label for="u-field">Field</label>
+            <select id="u-field">
+              <option value="TITLE">TITLE</option>
+              <option value="INSTRUCTOR">INSTRUCTOR</option>
+              <option value="DAY">DAY</option>
+              <option value="TIME">TIME</option>
+              <option value="DURATION">DURATION</option>
+              <option value="CLASSROOM">CLASSROOM</option>
+              <option value="SEMESTER">SEMESTER</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="u-value">New Value</label>
+            <input type="text" id="u-value" placeholder="C205">
+          </div>
+        </div>
+        <button class="btn-primary" onclick="doUpdate(this)">Update</button>
+      </div>
+
+      <div class="card danger-card">
+        <h3>Delete Course</h3>
+        <p class="hint">This permanently removes a single section. Use with care.</p>
+        <div class="delete-row">
+          <div class="form-group">
+            <label for="d-code">Code</label>
+            <input type="text" id="d-code" placeholder="COMP4001">
+          </div>
+          <div class="form-group">
+            <label for="d-section">Section</label>
+            <input type="text" id="d-section" placeholder="S1">
+          </div>
+        </div>
+        <button class="btn-danger" onclick="doDelete(this)">Delete Course</button>
+      </div>
+
+    </div><!-- /tab-admin -->
+
+    <!-- Results card — summary bar + table + empty state -->
+    <section class="results-card" id="results-card">
+      <div class="summary-bar" id="summary-bar"></div>
+      <div class="table-wrap">
+        <table id="result-table">
+          <thead>
+            <tr>
+              <th class="col-code">Code</th>
+              <th>Title</th>
+              <th>Section</th>
+              <th>Instructor</th>
+              <th>Day</th>
+              <th>Time</th>
+              <th>Duration</th>
+              <th>Classroom</th>
+              <th>Semester</th>
+            </tr>
+          </thead>
+          <tbody id="result-body"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="empty-state">
+        <h3>No courses found.</h3>
+        <p>Try another course code, instructor, or time slot.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Login modal — lives outside <main> so the overlay covers everything -->
+  <div class="modal-overlay" id="login-modal" aria-hidden="true"
+       onclick="onModalOverlayClick(event)">
+    <div class="modal-card" role="dialog" aria-modal="true"
+         aria-labelledby="login-modal-title">
+      <h2 id="login-modal-title">Sign In</h2>
+      <form id="login-form" onsubmit="login(event)">
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" placeholder="admin / student"
+                 autocomplete="username">
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label for="password">Password</label>
+          <input type="password" id="password" placeholder="Password"
+                 autocomplete="current-password">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary"
+                  onclick="closeLoginModal()">Cancel</button>
+          <button type="submit" class="btn-primary">Login</button>
+        </div>
+      </form>
+      <p class="login-hint">
+        Default: <code>admin / admin123</code> &middot;
+        <code>student / stu123</code>
+      </p>
+    </div>
+  </div>
+
+  <!-- Toast stack — fixed top-right, rendered above all content -->
+  <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
