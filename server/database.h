@@ -1,4 +1,5 @@
 #pragma once
+#include "crypto.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -65,8 +66,23 @@ public:
 
     // ---- Auth ----
     std::string authenticate(const std::string& user, const std::string& pass) {
+        // If pass is exactly 64 lowercase hex chars, treat it as a SHA-256 hash.
+        bool isHash = (pass.size() == 64);
+        if (isHash) {
+            for (char ch : pass) {
+                if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+                    isHash = false;
+                    break;
+                }
+            }
+        }
         for (auto& u : users) {
-            if (u.username == user && u.password == pass) return u.role;
+            if (u.username != user) continue;
+            if (isHash) {
+                if (sha256Hex(u.password) == pass) return u.role;
+            } else {
+                if (u.password == pass) return u.role;
+            }
         }
         return "";
     }
@@ -115,6 +131,79 @@ public:
             for (auto& ch : cd) ch = tolower(ch);
             for (auto& ch : ct) ch = tolower(ch);
             if (cd == ld && ct == lt) res.push_back(c);
+        }
+        return res;
+    }
+
+    // ---- Advanced Query ----
+    // Parses "HH:MM" to minutes since midnight; returns -1 on failure.
+    int timeToMinutes(const std::string& t) {
+        if (t.size() < 4) return -1;
+        size_t colon = t.find(':');
+        if (colon == std::string::npos) return -1;
+        try {
+            int h = std::stoi(t.substr(0, colon));
+            int m = std::stoi(t.substr(colon + 1));
+            if (h < 0 || h > 23 || m < 0 || m > 59) return -1;
+            return h * 60 + m;
+        } catch (...) {
+            return -1;
+        }
+    }
+
+    // Filters courses by keyword (substring across multiple fields), day (exact),
+    // semester (exact), and time_range ("morning"/"afternoon"/"evening"/"all"/empty).
+    // All non-empty, non-"all" filters must match (AND logic).
+    std::vector<Course> queryAdvanced(const std::string& keyword,
+                                      const std::string& day,
+                                      const std::string& semester,
+                                      const std::string& timeRange) {
+        std::vector<Course> res;
+
+        std::string kw = keyword, dy = day, sem = semester, tr = timeRange;
+        for (auto& c : kw)  c = tolower(c);
+        for (auto& c : dy)  c = tolower(c);
+        for (auto& c : sem) c = tolower(c);
+        for (auto& c : tr)  c = tolower(c);
+
+        bool hasKw  = !kw.empty();
+        bool hasDay = !dy.empty()  && dy  != "all";
+        bool hasSem = !sem.empty() && sem != "all";
+        bool hasTr  = !tr.empty()  && tr  != "all";
+
+        for (auto& c : courses) {
+            if (hasDay) {
+                std::string cd = c.day;
+                for (auto& ch : cd) ch = tolower(ch);
+                if (cd != dy) continue;
+            }
+            if (hasSem) {
+                std::string cs = c.semester;
+                for (auto& ch : cs) ch = tolower(ch);
+                if (cs != sem) continue;
+            }
+            if (hasTr) {
+                int courseMin = timeToMinutes(c.time);
+                if (courseMin < 0) continue;
+                bool inRange = false;
+                if      (tr == "morning")   inRange = (courseMin >= 480  && courseMin < 720);
+                else if (tr == "afternoon") inRange = (courseMin >= 720  && courseMin < 1080);
+                else if (tr == "evening")   inRange = (courseMin >= 1080);
+                else continue;
+                if (!inRange) continue;
+            }
+            if (hasKw) {
+                auto contains = [&](const std::string& field) {
+                    std::string lf = field;
+                    for (auto& ch : lf) ch = tolower(ch);
+                    return lf.find(kw) != std::string::npos;
+                };
+                if (!contains(c.code) && !contains(c.title) &&
+                    !contains(c.instructor) && !contains(c.classroom) &&
+                    !contains(c.day) && !contains(c.time) && !contains(c.semester))
+                    continue;
+            }
+            res.push_back(c);
         }
         return res;
     }

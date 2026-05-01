@@ -11,9 +11,11 @@
 #include <fstream>
 #include <algorithm>
 #include <ctime>
+#include <atomic>
 #include "database.h"
 #include "protocol.h"
 #include "logger.h"
+#include "crypto.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -24,6 +26,10 @@
 Database db;
 Logger logger("logs/server.log");
 std::mutex db_mutex;
+
+std::atomic<int>  active_clients{0};
+std::atomic<long> total_requests{0};
+std::time_t       server_start_time = 0;
 
 // Session state per client
 struct ClientSession {
@@ -51,10 +57,9 @@ std::vector<std::string> split(const std::string& s, char delim = '|') {
     return tokens;
 }
 
-std::string handleRequest(const std::string& raw, ClientSession& session) {
-    std::string line = trim(raw);
-    if (line.empty()) return "ERROR|E102|Empty request\n";
-
+// Inner dispatch: receives a trimmed plaintext command line, returns a plaintext response.
+static std::string dispatchRequest(const std::string& line, ClientSession& session) {
+    ++total_requests;
     std::vector<std::string> parts = split(line, '|');
     std::string cmd = parts[0];
     for (auto& c : cmd) c = toupper(c);
@@ -135,6 +140,30 @@ std::string handleRequest(const std::string& raw, ClientSession& session) {
         return resp;
     }
 
+    // SEARCH_ADVANCED|keyword=...|day=...|semester=...|time_range=...
+    if (cmd == "SEARCH_ADVANCED") {
+        std::string keyword, day, semester, timeRange;
+        for (size_t i = 1; i < parts.size(); ++i) {
+            const std::string& p = parts[i];
+            size_t eq = p.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = p.substr(0, eq);
+            std::string v = p.substr(eq + 1);
+            for (auto& ch : k) ch = tolower(ch);
+            if      (k == "keyword")    keyword   = v;
+            else if (k == "day")        day       = v;
+            else if (k == "semester")   semester  = v;
+            else if (k == "time_range") timeRange = v;
+        }
+        std::lock_guard<std::mutex> lock(db_mutex);
+        auto results = db.queryAdvanced(keyword, day, semester, timeRange);
+        if (results.empty()) return "RESULT_NONE|No courses match the criteria\n";
+        std::string resp = "RESULT_BEGIN\n";
+        for (auto& r : results) resp += r.toProtocol() + "\n";
+        resp += "RESULT_END\n";
+        return resp;
+    }
+
     // --- Admin-only guard ---
     if (cmd == "ADD" || cmd == "UPDATE" || cmd == "DELETE") {
         if (!session.authenticated || session.role != "admin") {
@@ -190,6 +219,22 @@ std::string handleRequest(const std::string& raw, ClientSession& session) {
         return "ERROR|E302|Course not found: " + parts[1] + " section " + parts[2] + "\n";
     }
 
+    // STATUS
+    if (cmd == "STATUS") {
+        int  a = active_clients.load();
+        long t = total_requests.load();
+        std::time_t now = std::time(nullptr);
+        long secs = (long)(now - server_start_time);
+        long hh = secs / 3600;
+        long mm = (secs % 3600) / 60;
+        long ss = secs % 60;
+        char tbuf[16];
+        snprintf(tbuf, sizeof(tbuf), "%02ld:%02ld:%02ld", hh, mm, ss);
+        return "STATUS_INFO|active=" + std::to_string(a) +
+               "|total="  + std::to_string(t) +
+               "|uptime=" + std::string(tbuf) + "\n";
+    }
+
     // HELP
     if (cmd == "HELP") {
         return
@@ -199,10 +244,12 @@ std::string handleRequest(const std::string& raw, ClientSession& session) {
             "INFO|  QUERY|<code>                            - Search by course code\n"
             "INFO|  SEARCH_INSTRUCTOR|<name>                - Search by instructor\n"
             "INFO|  SEARCH_TIME|<day>|<time>                - Search by time slot\n"
+            "INFO|  SEARCH_ADVANCED|<key=val>...            - Combined filter search\n"
             "INFO|  LIST_ALL[|<semester>]                   - List all courses\n"
             "INFO|  ADD|<code>|<title>|<sec>|<instr>|<day>|<time>|<dur>|<room>|<sem>  [admin]\n"
             "INFO|  UPDATE|<code>|<sec>|<field>|<val>       [admin]\n"
             "INFO|  DELETE|<code>|<section>                 [admin]\n"
+            "INFO|  STATUS                                  - Server status (active/total/uptime)\n"
             "INFO|  HELP                                    - Show this help\n"
             "INFO|  QUIT                                    - Disconnect\n";
     }
@@ -212,15 +259,54 @@ std::string handleRequest(const std::string& raw, ClientSession& session) {
     return "ERROR|E102|Unknown command: " + cmd + "\n";
 }
 
+// Public entry point: handles ENC| unwrapping and re-wrapping transparently.
+std::string handleRequest(const std::string& raw, ClientSession& session) {
+    std::string line = trim(raw);
+    if (line.empty()) return "ERROR|E102|Empty request\n";
+
+    bool wasEncrypted = false;
+    std::string actualLine = line;
+
+    if (line.rfind("ENC|", 0) == 0) {
+        std::string hexCipher = line.substr(4);
+        std::string cipher = hexDecode(hexCipher);
+        if (cipher.empty())
+            return "ERROR|E101|Invalid ENC payload (hex decode failed)\n";
+        actualLine = trim(xorDecrypt(cipher, XOR_KEY));
+        if (actualLine.empty())
+            return "ERROR|E101|Invalid ENC payload (empty after decrypt)\n";
+        wasEncrypted = true;
+    }
+
+    std::string response = dispatchRequest(actualLine, session);
+
+    if (wasEncrypted) {
+        // Strip trailing \n before encrypting, then re-add a single \n outside.
+        std::string payload = response;
+        if (!payload.empty() && payload.back() == '\n')
+            payload.pop_back();
+        return "ENC|" + hexEncode(xorEncrypt(payload, XOR_KEY)) + "\n";
+    }
+    return response;
+}
+
 void clientHandler(SOCKET clientSock, std::string clientAddr) {
     logger.log("Client connected: " + clientAddr);
+    ++active_clients;
     ClientSession session;
     session.sock = clientSock;
     session.authenticated = false;
     session.role = "student";
 
+    // Disable Nagle's algorithm so small interactive responses are flushed
+    // immediately. Without this, the OS may delay sending up to ~200ms while
+    // it waits to coalesce more bytes — felt as sluggish queries on the UI.
+    BOOL noDelay = TRUE;
+    setsockopt(clientSock, IPPROTO_TCP, TCP_NODELAY,
+               (const char*)&noDelay, sizeof(noDelay));
+
     // Send welcome banner
-    std::string welcome = "WELCOME|Timetable Inquiry System v2.0|Type HELP for commands\n";
+    std::string welcome = "WELCOME|Timetable Inquiry System v2.1|Type HELP for commands\n";
     send(clientSock, welcome.c_str(), (int)welcome.size(), 0);
 
     char buf[BUFFER_SIZE];
@@ -247,11 +333,14 @@ void clientHandler(SOCKET clientSock, std::string clientAddr) {
         }
     }
 done:
+    --active_clients;
     logger.log("Client disconnected: " + clientAddr);
     closesocket(clientSock);
 }
 
 int main() {
+    server_start_time = std::time(nullptr);
+
     // Init DB
     db.init("data/timetable.csv", "data/users.csv");
 

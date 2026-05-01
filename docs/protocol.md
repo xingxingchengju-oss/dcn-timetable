@@ -1,7 +1,7 @@
 # Timetable Inquiry System — Application-Layer Protocol Specification
 
-**Version:** 2.0  
-**Date:** 2026-04-28  
+**Version:** 2.1  
+**Date:** 2026-04-29  
 **Authors:** DCN Project Group
 
 ---
@@ -61,6 +61,33 @@ RESULT|field1|field2|...\n
 RESULT_END\n
 ```
 
+### 3.4 Encryption Layer (v2.1)
+
+An optional XOR-based encryption layer is available for demonstration purposes. This is **not production-grade** — it exists to demonstrate the concept of an application-layer cipher.
+
+When a client enables encryption, it prefixes its message with `ENC|`:
+
+```
+ENC|<hex-encoded ciphertext>\n
+```
+
+The server detects the `ENC|` prefix and decrypts the payload before processing. The server's response is **also encrypted** if and only if the corresponding request was encrypted.
+
+**Algorithm:** XOR each byte of the UTF-8 message with the corresponding byte of the repeating key.
+
+**Key:** `DCN2026TimetableKey`
+
+**Encoding:** The ciphertext is encoded as a lowercase hexadecimal string (2 hex chars per byte).
+
+**Example (plaintext `LIST_ALL`):**
+
+```
+C: ENC|<hex-encoded ciphertext of "LIST_ALL">
+S: ENC|<hex-encoded ciphertext of "RESULT_BEGIN\nRESULT|...">
+```
+
+Encryption is **opt-in per message**. A client may send some messages plain and others encrypted.
+
 ---
 
 ## 4. Session Lifecycle
@@ -99,6 +126,12 @@ Authenticate with the server.
 LOGIN|<username>|<password>
 ```
 
+The `<password>` field accepts either:
+- **Plaintext** — any string whose length is not 64 characters
+- **SHA-256 hex digest** — a 64-character lowercase hex string of the password's SHA-256 hash
+
+The server stores passwords as SHA-256 hashes. When a plaintext password is received (length ≠ 64), the server hashes it before comparison. When a 64-character hex string is received, it is compared directly as a hash.
+
 **Success response:**
 ```
 SUCCESS|<role>
@@ -110,9 +143,15 @@ where `<role>` is `student` or `admin`.
 FAILURE|E001|Invalid username or password
 ```
 
-**Example:**
+**Example (plaintext):**
 ```
 C: LOGIN|admin|secret123
+S: SUCCESS|admin
+```
+
+**Example (pre-hashed):**
+```
+C: LOGIN|admin|2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b
 S: SUCCESS|admin
 ```
 
@@ -236,6 +275,48 @@ ERROR|E101|Usage: SEARCH_TIME|<day>|<time>
 **Example:**
 ```
 C: SEARCH_TIME|Mon|10:00
+S: RESULT_BEGIN
+S: RESULT|COMP3003|Computer Networks|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
+S: RESULT_END
+```
+
+---
+
+#### `SEARCH_ADVANCED` (v2.1)
+
+Search for courses matching multiple optional criteria simultaneously. All fields are optional; omit or leave blank to skip that filter.
+
+**Request:**
+```
+SEARCH_ADVANCED|<code>|<instructor>|<day>|<time>|<classroom>|<semester>
+```
+
+| Position | Field        | Match type                    | Example     |
+|----------|--------------|-------------------------------|-------------|
+| 1        | `code`       | Case-insensitive prefix match | `COMP`      |
+| 2        | `instructor` | Case-insensitive partial match| `Chan`      |
+| 3        | `day`        | Case-insensitive exact match  | `Mon`       |
+| 4        | `time`       | Exact match (HH:MM)           | `10:00`     |
+| 5        | `classroom`  | Case-insensitive partial match| `A1`        |
+| 6        | `semester`   | Exact match                   | `2026S1`    |
+
+A result is returned only if it matches **all** non-empty fields (logical AND).
+
+**Success response:** Same multi-line `RESULT_BEGIN` / `RESULT_END` format as `QUERY`.
+
+**Empty response:**
+```
+RESULT_NONE|No courses found matching criteria
+```
+
+**Error:**
+```
+ERROR|E101|Usage: SEARCH_ADVANCED|<code>|<instructor>|<day>|<time>|<classroom>|<semester>
+```
+
+**Example:**
+```
+C: SEARCH_ADVANCED|COMP||Mon|||2026S1
 S: RESULT_BEGIN
 S: RESULT|COMP3003|Computer Networks|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
 S: RESULT_END
@@ -391,6 +472,34 @@ S: OK|Deleted COMP4001|S1
 
 ### 5.4 Utility Commands
 
+#### `STATUS` (v2.1)
+
+Request server runtime statistics. Available to all clients (no authentication required).
+
+**Request:**
+```
+STATUS
+```
+
+**Response:**
+```
+STATUS_INFO|active=<n>|total=<n>|uptime=<seconds>
+```
+
+| Field    | Type    | Description                                       |
+|----------|---------|---------------------------------------------------|
+| `active` | integer | Number of currently connected clients             |
+| `total`  | integer | Total client connections accepted since startup   |
+| `uptime` | integer | Server uptime in whole seconds since startup      |
+
+**Example:**
+```
+C: STATUS
+S: STATUS_INFO|active=3|total=47|uptime=3621
+```
+
+---
+
 #### `HELP`
 
 Request a list of available commands.
@@ -403,17 +512,19 @@ HELP
 **Response:** Multiple `INFO` lines:
 ```
 INFO|Available commands:
-INFO|  LOGIN|<user>|<pass>             - Authenticate
-INFO|  LOGOUT                          - End session
-INFO|  QUERY|<code>                    - Search by course code
-INFO|  SEARCH_INSTRUCTOR|<name>        - Search by instructor
-INFO|  SEARCH_TIME|<day>|<time>        - Search by time slot
-INFO|  LIST_ALL[|<semester>]           - List all courses
-INFO|  ADD|<9 fields>                  - Add course   [admin]
-INFO|  UPDATE|<code>|<sec>|<field>|<val> - Update field [admin]
-INFO|  DELETE|<code>|<section>         - Delete course [admin]
-INFO|  HELP                            - Show this help
-INFO|  QUIT                            - Disconnect
+INFO|  LOGIN|<user>|<pass>                            - Authenticate
+INFO|  LOGOUT                                         - End session
+INFO|  QUERY|<code>                                   - Search by course code
+INFO|  SEARCH_INSTRUCTOR|<name>                       - Search by instructor
+INFO|  SEARCH_TIME|<day>|<time>                       - Search by time slot
+INFO|  SEARCH_ADVANCED|<code>|<inst>|<day>|<time>|<room>|<sem> - Multi-field search
+INFO|  LIST_ALL[|<semester>]                          - List all courses
+INFO|  STATUS                                         - Server statistics
+INFO|  ADD|<9 fields>                                 - Add course   [admin]
+INFO|  UPDATE|<code>|<sec>|<field>|<val>              - Update field [admin]
+INFO|  DELETE|<code>|<section>                        - Delete course [admin]
+INFO|  HELP                                           - Show this help
+INFO|  QUIT                                           - Disconnect
 ```
 
 ---
@@ -443,7 +554,7 @@ The server closes the TCP connection immediately after sending `BYE`.
 Sent by the server immediately upon a new connection, before any client request.
 
 ```
-WELCOME|Timetable Inquiry System v2.0|Type HELP for commands
+WELCOME|Timetable Inquiry System v2.1|Type HELP for commands
 ```
 
 ---
@@ -459,6 +570,7 @@ WELCOME|Timetable Inquiry System v2.0|Type HELP for commands
 | `RESULT`      | S→C       | One course record (pipe-separated fields)    |
 | `RESULT_END`  | S→C       | End of a multi-record result block           |
 | `RESULT_NONE` | S→C       | Query succeeded but no records matched       |
+| `STATUS_INFO` | S→C       | Server statistics (response to STATUS)       |
 | `OK`          | S→C       | Admin write operation succeeded              |
 | `ERROR`       | S→C       | Command failed (see error code)              |
 | `INFO`        | S→C       | Informational text (used by HELP)            |
@@ -470,6 +582,7 @@ WELCOME|Timetable Inquiry System v2.0|Type HELP for commands
 
 | Code   | Meaning                                        |
 |--------|------------------------------------------------|
+| `E001` | Invalid username or password                   |
 | `E101` | Missing or malformed parameters                |
 | `E102` | Unknown command                                |
 | `E201` | Not authenticated                              |
@@ -515,15 +628,23 @@ Valid values for `day`: `Mon` `Tue` `Wed` `Thu` `Fri`
 ```
 [TCP connection on port 50000]
 
-S: WELCOME|Timetable Inquiry System v2.0|Type HELP for commands
+S: WELCOME|Timetable Inquiry System v2.1|Type HELP for commands
 
 C: LOGIN|student1|pass1234
 S: SUCCESS|student
+
+C: STATUS
+S: STATUS_INFO|active=1|total=12|uptime=305
 
 C: QUERY|COMP3003
 S: RESULT_BEGIN
 S: RESULT|COMP3003|Computer Networks|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
 S: RESULT|COMP3003|Computer Networks|S2|Dr. Chan|Wed|14:00|2h|B202|2026S1
+S: RESULT_END
+
+C: SEARCH_ADVANCED|COMP||Mon|||2026S1
+S: RESULT_BEGIN
+S: RESULT|COMP3003|Computer Networks|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
 S: RESULT_END
 
 C: SEARCH_TIME|Fri|09:00
@@ -547,6 +668,9 @@ S: OK|Updated COMP4999|S1: CLASSROOM -> F601
 C: DELETE|COMP4999|S1
 S: OK|Deleted COMP4999|S1
 
+C: ENC|<hex-encoded ciphertext of "LIST_ALL">
+S: ENC|<hex-encoded ciphertext of "RESULT_BEGIN\n...RESULT_END">
+
 C: QUIT
 S: BYE
 
@@ -561,3 +685,4 @@ S: BYE
 |---------|------------|-----------------------------------------------------------|
 | 1.0     | 2026-04    | Initial implementation (space-separated, port 8888)       |
 | 2.0     | 2026-04-28 | Unified `\|` separator; `RESULT_BEGIN`/`RESULT_END`; ports 50000/50001; structured error codes |
+| 2.1     | 2026-04-29 | Add STATUS command; add SEARCH_ADVANCED command; add ENC\| XOR encryption layer; add SHA-256 password hashing for LOGIN |

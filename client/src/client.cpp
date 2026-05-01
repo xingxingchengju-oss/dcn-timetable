@@ -43,6 +43,7 @@ static bool isTerminalLine(const std::string& line) {
     if (line.substr(0, 8) == "FAILURE|")     return true;
     if (line.substr(0, 12) == "RESULT_NONE|") return true;
     if (line.substr(0, 8) == "WELCOME|")     return true;
+    if (line.substr(0, 12) == "STATUS_INFO|") return true;
     // HELP response ends when last INFO line seen (last line of HELP block)
     if (line.find("QUIT") != std::string::npos &&
         line.substr(0, 5) == "INFO|") return true;
@@ -121,6 +122,23 @@ void printResponse(const std::string& resp) {
         else if (line == "RESULT_END") {
             printYellow("--- End ---\n");
         }
+        else if (line.substr(0, 12) == "STATUS_INFO|") {
+            // STATUS_INFO|active=N|total=M|uptime=HH:MM:SS
+            auto f = splitFields(line);
+            std::string active, total, uptime;
+            for (size_t i = 1; i < f.size(); ++i) {
+                size_t eq = f[i].find('=');
+                if (eq == std::string::npos) continue;
+                std::string k = f[i].substr(0, eq);
+                std::string v = f[i].substr(eq + 1);
+                if      (k == "active") active = v;
+                else if (k == "total")  total  = v;
+                else if (k == "uptime") uptime = v;
+            }
+            printCyan("[Server Status] Active=" + active +
+                      "  Total=" + total +
+                      "  Uptime=" + uptime + "\n");
+        }
         else if (line.substr(0, 12) == "RESULT_NONE|") {
             auto f = splitFields(line);
             printYellow("(no results) " + (f.size() > 1 ? f[1] : "") + "\n");
@@ -160,6 +178,8 @@ void showMenu(bool isAdmin) {
     }
     std::cout << "  8. Login / Logout\n";
     std::cout << "  9. Help\n";
+    std::cout << " 10. Server Status\n";
+    std::cout << " 11. Advanced Search\n";
     std::cout << "  0. Quit\n";
     std::cout << "Choose: ";
 }
@@ -318,6 +338,24 @@ int main(int argc, char* argv[]) {
         }
         else if (choice == "9") {
             sendLine("HELP");
+            printResponse(recvResponse());
+        }
+        else if (choice == "10") {
+            sendLine("STATUS");
+            printResponse(recvResponse());
+        }
+        else if (choice == "11") {
+            std::cout << "Advanced Search (leave blank to skip any field):\n";
+            std::string kw  = promptInput("  Keyword:               ");
+            std::string day = promptInput("  Day (Mon/Tue/.../blank): ");
+            std::string sem = promptInput("  Semester (e.g. 2026S1): ");
+            std::string tr  = promptInput("  Time range (morning/afternoon/evening/blank): ");
+            std::string cmd = "SEARCH_ADVANCED";
+            if (!kw.empty())  cmd += "|keyword="    + kw;
+            if (!day.empty()) cmd += "|day="         + day;
+            if (!sem.empty()) cmd += "|semester="    + sem;
+            if (!tr.empty())  cmd += "|time_range="  + tr;
+            sendLine(cmd);
             printResponse(recvResponse());
         }
         else {

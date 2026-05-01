@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Timetable Inquiry System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body data-role="guest">
+  <div class="bg-veil"></div>
+
+  <main class="app">
+    <!-- ====== SIDEBAR ====== -->
+    <aside class="sidebar">
+      <header class="brand">
+        <div class="brand-mark">τ</div>
+        <div class="brand-text">
+          <div class="brand-title">Timetable</div>
+          <div class="brand-sub">v2.1 · session <span id="session-id">—</span></div>
+        </div>
+      </header>
+
+      <!-- Mode toggle -->
+      <div class="mode-toggle" role="tablist" aria-label="Search mode">
+        <button class="mode-btn active" data-mode="quick" role="tab" aria-selected="true">⚡ Quick</button>
+        <button class="mode-btn" data-mode="advanced" role="tab" aria-selected="false">⊞ Advanced</button>
+      </div>
+
+      <!-- Quick panel -->
+      <section class="panel quick-panel" data-panel="quick">
+        <div class="quick-tabs" role="tablist" aria-label="Quick search type">
+          <button class="quick-tab active" data-qtab="code">Code</button>
+          <button class="quick-tab" data-qtab="instructor">Instructor</button>
+          <button class="quick-tab" data-qtab="time">Day + Time</button>
+          <button class="quick-tab" data-qtab="all">List All</button>
+        </div>
+
+        <div class="quick-body" data-qbody="code">
+          <label class="field">
+            <span class="field-label">Course code</span>
+            <input id="q-code" type="text" placeholder="e.g. COMP3003" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="quick-body hidden" data-qbody="instructor">
+          <label class="field">
+            <span class="field-label">Instructor name</span>
+            <input id="q-instructor" type="text" placeholder="e.g. Chan" autocomplete="off" />
+          </label>
+          <p class="field-hint">substring match, case-insensitive</p>
+        </div>
+
+        <div class="quick-body hidden" data-qbody="time">
+          <label class="field">
+            <span class="field-label">Day</span>
+            <select id="q-day">
+              <option value="Mon">Monday</option>
+              <option value="Tue">Tuesday</option>
+              <option value="Wed">Wednesday</option>
+              <option value="Thu">Thursday</option>
+              <option value="Fri">Friday</option>
+              <option value="Sat">Saturday</option>
+              <option value="Sun">Sunday</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Time (exact HH:MM)</span>
+            <input id="q-time" type="text" placeholder="10:00" autocomplete="off" />
+          </label>
+          <p class="field-hint">
+            Need a time range like "morning"?
+            <a href="#" class="inline-link" data-goto-advanced>Switch to Advanced →</a>
+          </p>
+        </div>
+
+        <div class="quick-body hidden" data-qbody="all">
+          <label class="field">
+            <span class="field-label">Semester (optional)</span>
+            <input id="q-semester" type="text" placeholder="2026S1 (leave blank for all)" autocomplete="off" />
+          </label>
+        </div>
+      </section>
+
+      <!-- Advanced panel -->
+      <section class="panel advanced-panel hidden" data-panel="advanced">
+        <label class="field">
+          <span class="field-label">Keyword</span>
+          <input id="adv-keyword" type="text" placeholder="search across all fields" autocomplete="off" />
+          <span class="field-hint">matches code / title / instructor / classroom / day / time / semester</span>
+        </label>
+
+        <div class="field">
+          <span class="field-label">Day of week</span>
+          <div class="chip-group" id="adv-days">
+            <button class="chip" data-value="">All</button>
+            <button class="chip" data-value="Mon">Mon</button>
+            <button class="chip" data-value="Tue">Tue</button>
+            <button class="chip" data-value="Wed">Wed</button>
+            <button class="chip" data-value="Thu">Thu</button>
+            <button class="chip" data-value="Fri">Fri</button>
+            <button class="chip" data-value="Sat">Sat</button>
+            <button class="chip" data-value="Sun">Sun</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Time range</span>
+          <div class="chip-group" id="adv-time-range">
+            <button class="chip" data-value="">All</button>
+            <button class="chip" data-value="morning">Morning <small>08–12</small></button>
+            <button class="chip" data-value="afternoon">Afternoon <small>12–18</small></button>
+            <button class="chip" data-value="evening">Evening <small>18+</small></button>
+          </div>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Semester</span>
+          <input id="adv-semester" type="text" placeholder="2026S1 (leave blank for all)" autocomplete="off" />
+        </label>
+      </section>
+
+      <!-- Action buttons -->
+      <div class="sidebar-actions">
+        <button class="btn btn-primary" id="run-query-btn">🔎 Run query</button>
+        <button class="btn btn-ghost" id="clear-btn" title="Clear results">×</button>
+      </div>
+
+      <!-- Status block -->
+      <div class="status-block" data-conn="connecting">
+        <div class="status-row">
+          <span class="status-dot" id="conn-dot"></span>
+          <span class="status-label">DCN</span>
+          <span class="status-pill" id="conn-pill">CONNECTING…</span>
+          <span class="status-uptime" id="conn-uptime"></span>
+        </div>
+        <div class="status-row encryption-row">
+          <span class="lock-icon">🔒</span>
+          <span class="status-label">XOR Encryption</span>
+          <label class="switch">
+            <input type="checkbox" id="enc-toggle" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Auth block -->
+      <div class="auth-block">
+        <div class="auth-guest" data-role-show="guest">
+          <button class="btn btn-block btn-secondary" id="open-login-btn">Sign in</button>
+        </div>
+        <div class="auth-user" data-role-show="auth">
+          <div class="auth-avatar" id="auth-initial">?</div>
+          <div class="auth-info">
+            <div class="auth-name" id="auth-username">—</div>
+            <div class="auth-role" id="auth-role">—</div>
+          </div>
+          <button class="btn btn-link" id="logout-btn">Logout</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ====== MAIN ====== -->
+    <section class="main">
+      <header class="main-header">
+        <div class="main-title">
+          <h1 id="result-headline">Timetable</h1>
+          <div class="filter-chips" id="filter-chips"></div>
+          <div class="result-meta" id="result-meta">
+            <span id="result-meta-text">Run a query to see results</span>
+          </div>
+        </div>
+
+        <div class="main-actions">
+          <div class="view-toggle" role="tablist" aria-label="View mode">
+            <button class="view-btn active" data-view="table" role="tab" aria-selected="true">▤ Table</button>
+            <button class="view-btn" data-view="week" role="tab" aria-selected="false">▦ Week</button>
+          </div>
+          <button class="btn btn-add" id="add-btn" data-admin-only>+ Add course</button>
+        </div>
+      </header>
+
+      <!-- Table view -->
+      <div class="view-pane" data-view-pane="table">
+        <div class="table-card">
+          <table class="result-table">
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Title</th>
+                <th>Sec</th>
+                <th>Instructor</th>
+                <th>Day</th>
+                <th>Time</th>
+                <th>Duration</th>
+                <th>Classroom</th>
+                <th>Semester</th>
+                <th class="admin-col" data-admin-only>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="result-body"></tbody>
+          </table>
+          <div class="empty-state" id="empty-state">
+            <div class="empty-icon">📚</div>
+            <div class="empty-title">No results yet</div>
+            <div class="empty-sub">Run a query from the sidebar to populate this table.</div>
+          </div>
+          <div class="offline-state" id="offline-state">
+            <div class="offline-icon">⚠️</div>
+            <div class="offline-title">Cannot connect to server</div>
+            <div class="offline-sub">Make sure <code>server.exe</code> is running on port 50000<br>and the bridge is reachable on port 50002.</div>
+            <div class="offline-actions">
+              <button class="btn btn-primary" id="retry-btn">Retry connection</button>
+              <button class="btn btn-ghost" id="howto-btn">How to start server</button>
+            </div>
+            <div class="offline-howto hidden" id="offline-howto">
+              <ol>
+                <li>Open a terminal at the project root and run <code>server.exe</code> (or build it via <code>build.bat</code>)</li>
+                <li>In another terminal: <code>cd web &amp;&amp; python bridge.py</code></li>
+                <li>Refresh this page or click Retry</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Week view -->
+      <div class="view-pane hidden" data-view-pane="week">
+        <div class="week-card">
+          <div class="week-grid" id="week-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== WIRE PREVIEW ====== -->
+    <div class="wire-drawer collapsed" id="wire-drawer">
+      <button class="wire-toggle" id="wire-toggle" aria-expanded="false">
+        <span class="wire-caret">▸</span>
+        <span class="wire-title">Wire Preview</span>
+        <span class="wire-mode" id="wire-mode" title="Encryption off — payloads are sent in cleartext. Toggle XOR Encryption in the sidebar.">PLAINTEXT</span>
+        <span class="wire-time" id="wire-time">—</span>
+      </button>
+      <div class="wire-body">
+        <div class="wire-frame">
+          <div class="wire-frame-label">→ REQUEST</div>
+          <pre class="wire-frame-body" id="wire-request">(no traffic yet)</pre>
+        </div>
+        <div class="wire-frame">
+          <div class="wire-frame-label">← RESPONSE</div>
+          <pre class="wire-frame-body" id="wire-response">(no traffic yet)</pre>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ====== TOAST CONTAINER ====== -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <!-- ====== LOGIN MODAL ====== -->
+  <div class="modal" id="login-modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card" role="dialog" aria-labelledby="login-title">
+      <button class="modal-close" data-close-modal aria-label="Close">×</button>
+      <h2 id="login-title" class="modal-title">Sign in</h2>
+      <p class="modal-sub">Defaults: <code>admin</code> / <code>admin123</code> · <code>student</code> / <code>stu123</code></p>
+      <form id="login-form" autocomplete="off">
+        <label class="field">
+          <span class="field-label">Username</span>
+          <input id="username" type="text" required />
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input id="password" type="password" required />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn-primary">Sign in</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====== ADD COURSE MODAL ====== -->
+  <div class="modal" id="add-modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card modal-wide" role="dialog" aria-labelledby="add-title">
+      <button class="modal-close" data-close-modal aria-label="Close">×</button>
+      <h2 id="add-title" class="modal-title">Add course</h2>
+      <form id="add-form" autocomplete="off">
+        <div class="form-grid">
+          <label class="field"><span class="field-label">Code</span><input id="a-code" required /></label>
+          <label class="field"><span class="field-label">Title</span><input id="a-title" required /></label>
+          <label class="field"><span class="field-label">Section</span><input id="a-section" placeholder="S1" required /></label>
+          <label class="field"><span class="field-label">Instructor</span><input id="a-instructor" required /></label>
+          <label class="field"><span class="field-label">Day</span>
+            <select id="a-day" required>
+              <option>Mon</option><option>Tue</option><option>Wed</option>
+              <option>Thu</option><option>Fri</option><option>Sat</option><option>Sun</option>
+            </select>
+          </label>
+          <label class="field"><span class="field-label">Time</span><input id="a-time" placeholder="10:00" required /></label>
+          <label class="field"><span class="field-label">Duration</span><input id="a-duration" placeholder="2h" required /></label>
+          <label class="field"><span class="field-label">Classroom</span><input id="a-classroom" required /></label>
+          <label class="field"><span class="field-label">Semester</span><input id="a-semester" placeholder="2026S1" required /></label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn-primary">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====== EDIT COURSE MODAL (two-step) ====== -->
+  <div class="modal" id="edit-modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card" role="dialog" aria-labelledby="edit-title">
+      <button class="modal-close" data-close-modal aria-label="Close">×</button>
+      <h2 id="edit-title" class="modal-title">Edit course</h2>
+      <p class="modal-sub">
+        <code id="edit-target">—</code> · one field per submit
+      </p>
+
+      <div class="edit-step" data-step="1">
+        <div class="field">
+          <span class="field-label">1 · Choose field to update</span>
+          <div class="chip-group" id="edit-fields">
+            <button class="chip" data-field="title">Title</button>
+            <button class="chip" data-field="instructor">Instructor</button>
+            <button class="chip" data-field="day">Day</button>
+            <button class="chip" data-field="time">Time</button>
+            <button class="chip" data-field="duration">Duration</button>
+            <button class="chip" data-field="classroom">Classroom</button>
+            <button class="chip" data-field="semester">Semester</button>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close-modal>Done</button>
+        </div>
+      </div>
+
+      <form class="edit-step hidden" data-step="2" id="edit-form">
+        <label class="field">
+          <span class="field-label">2 · New value for <code id="edit-field-name">—</code></span>
+          <input id="edit-value" required />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="edit-back-btn">← Back</button>
+          <button type="submit" class="btn btn-primary">Update</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====== DELETE CONFIRM MODAL ====== -->
+  <div class="modal" id="delete-modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card" role="dialog" aria-labelledby="delete-title">
+      <button class="modal-close" data-close-modal aria-label="Close">×</button>
+      <h2 id="delete-title" class="modal-title">Delete course?</h2>
+      <p class="modal-sub">This action cannot be undone.</p>
+      <p class="modal-target"><code id="delete-target">—</code></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-modal>Cancel</button>
+        <button type="button" class="btn btn-danger" id="delete-confirm-btn">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
