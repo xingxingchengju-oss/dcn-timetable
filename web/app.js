@@ -40,6 +40,7 @@ const state = {
   lastLatencyMs: 0,
   editing: { code: "", section: "", field: "" },
   deleting: { code: "", section: "" },
+  detailRow: null,
   connection: "connecting", // "connected" | "connecting" | "disconnected"
 };
 
@@ -52,19 +53,14 @@ function setConnectionState(s) {
   state.connection = s;
   const block = document.querySelector(".status-block");
   if (block) block.dataset.conn = s;
-  const pill = document.getElementById("conn-pill");
+  const count = document.getElementById("conn-count");
   const uptime = document.getElementById("conn-uptime");
+  const total = document.getElementById("conn-total");
 
-  if (s === "connected") {
-    if (pill && !pill.textContent.startsWith("LIVE")) {
-      pill.innerHTML = 'LIVE <span id="conn-count">—</span>';
-    }
-  } else if (s === "connecting") {
-    if (pill) pill.textContent = "CONNECTING…";
-    if (uptime) uptime.textContent = "";
-  } else if (s === "disconnected") {
-    if (pill) pill.textContent = "OFFLINE";
-    if (uptime) uptime.textContent = "";
+  if (s === "connecting" || s === "disconnected") {
+    if (count) count.textContent = "—/64";
+    if (uptime) uptime.textContent = "—";
+    if (total) total.textContent = "—";
   }
 
   updateMetaForConnection();
@@ -116,7 +112,7 @@ async function retryConnect() {
     if (data.ok) {
       state.sessionId = data.session_id;
       const sidEl = document.getElementById("session-id");
-      if (sidEl) sidEl.textContent = data.session_id ? data.session_id.slice(0, 4) : "—";
+      if (sidEl) sidEl.textContent = data.session_id ? data.session_id.slice(0, 4).toUpperCase() : "—";
       const lines = data.lines || [];
       if (lines.length && lines[0].startsWith("WELCOME|")) {
         const banner = lines[0].split("|").slice(1).join(" — ");
@@ -236,7 +232,7 @@ async function silentReconnect() {
     if (!data.ok) return false;
     state.sessionId = data.session_id;
     const sidEl = document.getElementById("session-id");
-    if (sidEl) sidEl.textContent = data.session_id ? data.session_id.slice(0, 4) : "—";
+    if (sidEl) sidEl.textContent = data.session_id ? data.session_id.slice(0, 4).toUpperCase() : "—";
     setConnectionState("connected");
     return true;
   } catch (_) {
@@ -554,9 +550,7 @@ function renderWeek() {
     ev.appendChild(title);
     ev.appendChild(meta);
 
-    if (state.role === "admin") {
-      ev.addEventListener("click", () => openEditModal(r.code, r.section));
-    }
+    ev.addEventListener("click", () => openDetailModal(r));
 
     grid.appendChild(ev);
   });
@@ -840,6 +834,16 @@ async function submitAdd(event) {
 // Edit course (two-step single-field flow)
 // =============================================================================
 
+function openDetailModal(row) {
+  state.detailRow = row;
+  ["code", "title", "section", "instructor", "day", "time", "duration", "classroom", "semester"]
+    .forEach(f => {
+      const el = document.getElementById(`det-${f}`);
+      if (el) el.textContent = row[f] || "—";
+    });
+  openModal("detail-modal");
+}
+
 function openEditModal(code, section) {
   state.editing = { code, section, field: "" };
   document.getElementById("edit-target").textContent = `${code} · ${section}`;
@@ -978,9 +982,9 @@ async function pollStatus() {
     const countEl = document.getElementById("conn-count");
     if (countEl) countEl.textContent = `${data.active || 0}/64`;
     const upEl = document.getElementById("conn-uptime");
-    if (upEl) upEl.textContent = data.uptime || "";
-    const pill = document.getElementById("conn-pill");
-    if (pill) pill.title = `Total requests: ${data.total || 0}`;
+    if (upEl) upEl.textContent = data.uptime || "—";
+    const totEl = document.getElementById("conn-total");
+    if (totEl) totEl.textContent = (data.total ?? 0).toLocaleString();
   } catch (_) {
     // Network-level failure (bridge down) — go offline.
     setConnectionState("disconnected");
@@ -1043,6 +1047,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     input.addEventListener("keydown", e => {
       if (e.key === "Enter") { e.preventDefault(); runQuery(); }
     });
+  });
+
+  // Detail modal — Edit and Delete actions
+  document.getElementById("detail-edit-btn")?.addEventListener("click", () => {
+    if (!state.detailRow) return;
+    closeModal("detail-modal");
+    openEditModal(state.detailRow.code, state.detailRow.section);
+  });
+  document.getElementById("detail-delete-btn")?.addEventListener("click", () => {
+    if (!state.detailRow) return;
+    closeModal("detail-modal");
+    openDeleteModal(state.detailRow.code, state.detailRow.section);
   });
 
   // Retry / how-to buttons in the offline card + meta row click

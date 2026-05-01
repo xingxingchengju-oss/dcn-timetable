@@ -6,7 +6,7 @@
   <title>Timetable Inquiry System</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Playfair+Display:ital,wght@0,500;0,600;1,400&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body data-role="guest">
@@ -16,10 +16,10 @@
     <!-- ====== SIDEBAR ====== -->
     <aside class="sidebar">
       <header class="brand">
-        <div class="brand-mark">τ</div>
+        <img class="brand-logo" src="./assets/BNBU.png" alt="BNBU" />
         <div class="brand-text">
           <div class="brand-title">Timetable</div>
-          <div class="brand-sub">v2.1 · session <span id="session-id">—</span></div>
+          <div class="brand-sub">v2.1 · SID <span id="session-id">—</span></div>
         </div>
       </header>
 
@@ -125,19 +125,42 @@
       <!-- Action buttons -->
       <div class="sidebar-actions">
         <button class="btn btn-primary" id="run-query-btn">🔎 Run query</button>
-        <button class="btn btn-ghost" id="clear-btn" title="Clear results">×</button>
+        <button class="btn btn-clear" id="clear-btn" title="Clear results">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+          </svg>
+          <span>Clear</span>
+        </button>
       </div>
 
       <!-- Status block -->
       <div class="status-block" data-conn="connecting">
-        <div class="status-row">
+        <div class="status-row" data-stat="live">
           <span class="status-dot" id="conn-dot"></span>
-          <span class="status-label">DCN</span>
-          <span class="status-pill" id="conn-pill">CONNECTING…</span>
-          <span class="status-uptime" id="conn-uptime"></span>
+          <span class="status-label">LIVE</span>
+          <span class="status-value" id="conn-count">—/64</span>
+        </div>
+        <div class="status-row" data-stat="uptime">
+          <svg class="status-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+            <path d="M8 4v4l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <span class="status-label">Uptime</span>
+          <span class="status-value" id="conn-uptime">—</span>
+        </div>
+        <div class="status-row" data-stat="total">
+          <svg class="status-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2 8h3l2-4 2 8 2-4h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
+          </svg>
+          <span class="status-label">Requests</span>
+          <span class="status-value" id="conn-total">—</span>
         </div>
         <div class="status-row encryption-row">
-          <span class="lock-icon">🔒</span>
+          <svg class="status-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="3.5" y="7" width="9" height="6.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>
+            <path d="M5.5 7V5a2.5 2.5 0 015 0v2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
           <span class="status-label">XOR Encryption</span>
           <label class="switch">
             <input type="checkbox" id="enc-toggle" />
@@ -257,6 +280,58 @@
 
   <!-- ====== TOAST CONTAINER ====== -->
   <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <!-- ====== COURSE DETAIL MODAL ====== -->
+  <div class="modal" id="detail-modal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card" role="dialog" aria-labelledby="detail-heading">
+      <button class="modal-close" data-close-modal aria-label="Close">×</button>
+      <h2 id="detail-heading" class="modal-title">Course Info</h2>
+      <div class="detail-grid">
+        <div class="detail-row">
+          <span class="detail-label">Code</span>
+          <code class="detail-value" id="det-code">—</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Title</span>
+          <span class="detail-value" id="det-title">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Section</span>
+          <span class="detail-value" id="det-section">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Instructor</span>
+          <span class="detail-value" id="det-instructor">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Day</span>
+          <span class="detail-value" id="det-day">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Time</span>
+          <span class="detail-value" id="det-time">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Duration</span>
+          <span class="detail-value" id="det-duration">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Classroom</span>
+          <span class="detail-value" id="det-classroom">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Semester</span>
+          <span class="detail-value" id="det-semester">—</span>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-modal>Close</button>
+        <button type="button" class="btn btn-secondary" id="detail-edit-btn" data-admin-only>✏ Edit</button>
+        <button type="button" class="btn btn-danger"    id="detail-delete-btn" data-admin-only>Delete</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ====== LOGIN MODAL ====== -->
   <div class="modal" id="login-modal" aria-hidden="true">
