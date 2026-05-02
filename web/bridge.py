@@ -32,6 +32,10 @@ TERMINAL_PREFIXES = ("OK|", "ERROR|", "SUCCESS|", "FAILURE|",
                      "ENC|")           # v2.1: encrypted response (single line)
 TERMINAL_EXACT = ("RESULT_END", "BYE")
 
+# ---- Response cache (v2.2) ----
+_list_cache: dict = {}       # cmd_upper -> (timestamp, lines)
+_LIST_CACHE_TTL = 5.0        # seconds; tune up for production use
+
 # ---- Crypto helpers (v2.1) ----
 XOR_KEY = b"DCN2026TimetableKey"
 
@@ -240,7 +244,8 @@ CORS(app)
 
 
 def make_response(ok, session_id=None, lines=None, error=None,
-                  raw_request=None, raw_response=None, status=200):
+                  raw_request=None, raw_response=None, status=200,
+                  cache_hit=False):
     payload = {
         "ok": ok,
         "session_id": session_id,
@@ -248,6 +253,7 @@ def make_response(ok, session_id=None, lines=None, error=None,
         "error": error,
         "raw_request": raw_request,
         "raw_response": raw_response,
+        "cache_hit": cache_hit,
     }
     return jsonify(payload), status
 
@@ -353,6 +359,17 @@ def api_command():
         return make_response(False, session_id=sid, error="Unknown session", status=400)
 
     cmd_clean = cmd.strip()
+    cmd_upper = cmd_clean.upper()
+    is_list_all = (cmd_upper == "LIST_ALL" or cmd_upper.startswith("LIST_ALL|"))
+
+    # Cache read: serve LIST_ALL responses from memory if still fresh.
+    if is_list_all:
+        now = time.time()
+        cached = _list_cache.get(cmd_upper)
+        if cached and (now - cached[0]) < _LIST_CACHE_TTL:
+            print(f"[cache] HIT  {cmd_upper}")
+            return make_response(True, session_id=sid, lines=cached[1], cache_hit=True)
+
     with session.lock:
         # Try once on the existing socket.
         try:
@@ -372,6 +389,17 @@ def api_command():
                 _drop_session(sid, reason=f"retry failed: {e2}")
                 return make_response(False, session_id=sid,
                                      error=f"Connection error: {e2}", status=502)
+
+    # Cache write: store a successful LIST_ALL result for future requests.
+    if is_list_all and "RESULT_END" in lines:
+        _list_cache[cmd_upper] = (time.time(), lines)
+        print(f"[cache] STORE {cmd_upper} ({len(lines)} lines)")
+
+    # Cache invalidate: any successful write operation (ADD/UPDATE/DELETE)
+    # clears all cached list data so the next LIST_ALL always reflects it.
+    if lines and lines[0].startswith("OK|") and _list_cache:
+        _list_cache.clear()
+        print(f"[cache] CLEAR (write op: {cmd_upper})")
 
     return make_response(True, session_id=sid, lines=lines,
                          raw_request=raw_req, raw_response=raw_resp)
@@ -476,4 +504,5 @@ def _drop_session(sid, reason="", graceful=False):
 if __name__ == "__main__":
     print(f"[bridge] starting on http://127.0.0.1:{BRIDGE_PORT}")
     print(f"[bridge] forwarding to TCP {SERVER_HOST}:{SERVER_PORT}")
+    print(f"[bridge] LIST_ALL caching enabled (TTL={_LIST_CACHE_TTL}s)")
     app.run(host="127.0.0.1", port=BRIDGE_PORT, threaded=True)

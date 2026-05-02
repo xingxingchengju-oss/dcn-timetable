@@ -309,6 +309,7 @@ function renderWire(req, resp) {
   updateWireMode();
   const now = new Date();
   document.getElementById("wire-time").textContent =
+    "last frame · " +
     now.toTimeString().slice(0, 8) + "." + String(now.getMilliseconds()).padStart(3, "0");
 }
 

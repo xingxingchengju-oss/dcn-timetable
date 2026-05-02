@@ -44,3 +44,10 @@ desktop.ini
 
 # Claude Code working directory
 .claude/
+
+# Python (bridge.py runtime artifacts)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

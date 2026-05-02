@@ -1,7 +1,7 @@
 # Timetable Inquiry System — Application-Layer Protocol Specification
 
-**Version:** 2.1  
-**Date:** 2026-04-29  
+**Version:** 2.2  
+**Date:** 2026-05-02  
 **Authors:** DCN Project Group
 
 ---
@@ -284,41 +284,36 @@ S: RESULT_END
 
 #### `SEARCH_ADVANCED` (v2.1)
 
-Search for courses matching multiple optional criteria simultaneously. All fields are optional; omit or leave blank to skip that filter.
+Search for courses matching multiple optional key=value criteria simultaneously. All parameters are optional; if none are provided, all courses are returned.
 
 **Request:**
 ```
-SEARCH_ADVANCED|<code>|<instructor>|<day>|<time>|<classroom>|<semester>
+SEARCH_ADVANCED[|<key>=<value>...]
 ```
 
-| Position | Field        | Match type                    | Example     |
-|----------|--------------|-------------------------------|-------------|
-| 1        | `code`       | Case-insensitive prefix match | `COMP`      |
-| 2        | `instructor` | Case-insensitive partial match| `Chan`      |
-| 3        | `day`        | Case-insensitive exact match  | `Mon`       |
-| 4        | `time`       | Exact match (HH:MM)           | `10:00`     |
-| 5        | `classroom`  | Case-insensitive partial match| `A1`        |
-| 6        | `semester`   | Exact match                   | `2026S1`    |
+Parameters may appear in any order, separated by `|`.
 
-A result is returned only if it matches **all** non-empty fields (logical AND).
+| Key          | Match type                                                                                | Example                |
+|--------------|-------------------------------------------------------------------------------------------|------------------------|
+| `keyword`    | Case-insensitive substring across code, title, instructor, classroom, day, time, semester | `keyword=COMP`         |
+| `day`        | Case-insensitive exact match                                                              | `day=Mon`              |
+| `semester`   | Exact match                                                                               | `semester=2026S1`      |
+| `time_range` | Named band: `morning` (08:00–11:59), `afternoon` (12:00–17:59), `evening` (18:00+)       | `time_range=afternoon` |
+
+A result is returned only if it matches **all** provided parameters (logical AND).
 
 **Success response:** Same multi-line `RESULT_BEGIN` / `RESULT_END` format as `QUERY`.
 
 **Empty response:**
 ```
-RESULT_NONE|No courses found matching criteria
-```
-
-**Error:**
-```
-ERROR|E101|Usage: SEARCH_ADVANCED|<code>|<instructor>|<day>|<time>|<classroom>|<semester>
+RESULT_NONE|No courses match the criteria
 ```
 
 **Example:**
 ```
-C: SEARCH_ADVANCED|COMP||Mon|||2026S1
+C: SEARCH_ADVANCED|keyword=COMP|day=Mon|semester=2026S1
 S: RESULT_BEGIN
-S: RESULT|COMP3003|Computer Networks|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
+S: RESULT|COMP3003|Data Communications|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
 S: RESULT_END
 ```
 
@@ -358,7 +353,7 @@ S: RESULT_END
 
 The following commands require the client to be authenticated with role `admin`. Sending them unauthenticated or as a `student` returns:
 ```
-ERROR|E201|Unauthorized. Admin role required.
+ERROR|E202|Insufficient privileges (admin required)
 ```
 
 #### `ADD`
@@ -483,19 +478,19 @@ STATUS
 
 **Response:**
 ```
-STATUS_INFO|active=<n>|total=<n>|uptime=<seconds>
+STATUS_INFO|active=<n>|total=<n>|uptime=<HH:MM:SS>
 ```
 
 | Field    | Type    | Description                                       |
 |----------|---------|---------------------------------------------------|
 | `active` | integer | Number of currently connected clients             |
 | `total`  | integer | Total client connections accepted since startup   |
-| `uptime` | integer | Server uptime in whole seconds since startup      |
+| `uptime` | string  | Server uptime formatted as `HH:MM:SS`             |
 
 **Example:**
 ```
 C: STATUS
-S: STATUS_INFO|active=3|total=47|uptime=3621
+S: STATUS_INFO|active=3|total=47|uptime=01:00:21
 ```
 
 ---
@@ -517,7 +512,7 @@ INFO|  LOGOUT                                         - End session
 INFO|  QUERY|<code>                                   - Search by course code
 INFO|  SEARCH_INSTRUCTOR|<name>                       - Search by instructor
 INFO|  SEARCH_TIME|<day>|<time>                       - Search by time slot
-INFO|  SEARCH_ADVANCED|<code>|<inst>|<day>|<time>|<room>|<sem> - Multi-field search
+INFO|  SEARCH_ADVANCED|<key>=<val>...                - Multi-field search
 INFO|  LIST_ALL[|<semester>]                          - List all courses
 INFO|  STATUS                                         - Server statistics
 INFO|  ADD|<9 fields>                                 - Add course   [admin]
@@ -634,7 +629,7 @@ C: LOGIN|student1|pass1234
 S: SUCCESS|student
 
 C: STATUS
-S: STATUS_INFO|active=1|total=12|uptime=305
+S: STATUS_INFO|active=1|total=12|uptime=00:05:05
 
 C: QUERY|COMP3003
 S: RESULT_BEGIN
@@ -642,9 +637,9 @@ S: RESULT|COMP3003|Computer Networks|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
 S: RESULT|COMP3003|Computer Networks|S2|Dr. Chan|Wed|14:00|2h|B202|2026S1
 S: RESULT_END
 
-C: SEARCH_ADVANCED|COMP||Mon|||2026S1
+C: SEARCH_ADVANCED|keyword=COMP|day=Mon|semester=2026S1
 S: RESULT_BEGIN
-S: RESULT|COMP3003|Computer Networks|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
+S: RESULT|COMP3003|Data Communications|S1|Dr. Chan|Mon|10:00|2h|A101|2026S1
 S: RESULT_END
 
 C: SEARCH_TIME|Fri|09:00
@@ -686,3 +681,4 @@ S: BYE
 | 1.0     | 2026-04    | Initial implementation (space-separated, port 8888)       |
 | 2.0     | 2026-04-28 | Unified `\|` separator; `RESULT_BEGIN`/`RESULT_END`; ports 50000/50001; structured error codes |
 | 2.1     | 2026-04-29 | Add STATUS command; add SEARCH_ADVANCED command; add ENC\| XOR encryption layer; add SHA-256 password hashing for LOGIN |
+| 2.2     | 2026-05-02 | Documentation corrections only (no wire-protocol change): SEARCH_ADVANCED updated to key=value format; STATUS uptime documented as HH:MM:SS; admin auth error code corrected to E202 in §5.3 |

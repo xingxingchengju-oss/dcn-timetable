@@ -89,30 +89,34 @@
         <label class="field">
           <span class="field-label">Keyword</span>
           <input id="adv-keyword" type="text" placeholder="search across all fields" autocomplete="off" />
-          <span class="field-hint">matches code / title / instructor / classroom / day / time / semester</span>
+          <span class="field-hint">searches across all fields</span>
         </label>
 
         <div class="field">
           <span class="field-label">Day of week</span>
-          <div class="chip-group" id="adv-days">
-            <button class="chip" data-value="">All</button>
-            <button class="chip" data-value="Mon">Mon</button>
-            <button class="chip" data-value="Tue">Tue</button>
-            <button class="chip" data-value="Wed">Wed</button>
-            <button class="chip" data-value="Thu">Thu</button>
-            <button class="chip" data-value="Fri">Fri</button>
-            <button class="chip" data-value="Sat">Sat</button>
-            <button class="chip" data-value="Sun">Sun</button>
+          <div class="chip-stack" id="adv-days">
+            <button class="chip chip-all" data-value="">All</button>
+            <div class="chip-row chip-row-7">
+              <button class="chip" data-value="Mon">Mon</button>
+              <button class="chip" data-value="Tue">Tue</button>
+              <button class="chip" data-value="Wed">Wed</button>
+              <button class="chip" data-value="Thu">Thu</button>
+              <button class="chip" data-value="Fri">Fri</button>
+              <button class="chip" data-value="Sat">Sat</button>
+              <button class="chip" data-value="Sun">Sun</button>
+            </div>
           </div>
         </div>
 
         <div class="field">
           <span class="field-label">Time range</span>
-          <div class="chip-group" id="adv-time-range">
-            <button class="chip" data-value="">All</button>
-            <button class="chip" data-value="morning">Morning <small>08–12</small></button>
-            <button class="chip" data-value="afternoon">Afternoon <small>12–18</small></button>
-            <button class="chip" data-value="evening">Evening <small>18+</small></button>
+          <div class="chip-stack" id="adv-time-range">
+            <button class="chip chip-all" data-value="">All</button>
+            <div class="chip-row chip-row-3">
+              <button class="chip" data-value="morning">Morning <small>08–12</small></button>
+              <button class="chip" data-value="afternoon">Afternoon <small>12–18</small></button>
+              <button class="chip" data-value="evening">Evening <small>18+</small></button>
+            </div>
           </div>
         </div>
 
@@ -172,7 +176,7 @@
       <!-- Auth block -->
       <div class="auth-block">
         <div class="auth-guest" data-role-show="guest">
-          <button class="btn btn-block btn-secondary" id="open-login-btn">Sign in</button>
+          <button class="btn btn-block btn-signin" id="open-login-btn">Sign in</button>
         </div>
         <div class="auth-user" data-role-show="auth">
           <div class="auth-avatar" id="auth-initial">?</div>
