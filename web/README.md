@@ -1,9 +1,12 @@
 # Timetable Inquiry System — Web GUI
 
 Browser-based front-end for the DCN Assignment 2 timetable server.
-A lightweight Python bridge translates HTTP (fetch) into the server's
-raw TCP protocol (v2.0, pipe-separated), so the browser never speaks
-TCP directly.
+A Python (Flask) bridge translates HTTP (fetch) into the server's
+raw TCP protocol (v2.4, pipe-separated), so the browser never speaks
+TCP directly. The bridge is **not** a transparent forwarder — it adds
+SHA-256 login hashing, optional `ENC|` XOR wrapping, a 5-second
+`LIST_ALL` cache, a NOTIFY-routing reader thread, and silent
+socket reconnect with login replay.
 
 ---
 
@@ -95,13 +98,16 @@ start chrome web/index.html
 
 ## API Endpoints (bridge)
 
-All endpoints return `{ ok, session_id, lines, error }`.
+All endpoints return `{ ok, session_id, lines, error }` (plus `raw_request`, `raw_response`, `cache_hit` for observability).
 
-| Method | Path              | Body (JSON)                    | Description                        |
-|--------|-------------------|--------------------------------|------------------------------------|
-| POST   | `/api/connect`    | —                              | Open TCP connection, get session   |
-| POST   | `/api/command`    | `{session_id, command}`        | Send one protocol command, get lines |
-| POST   | `/api/disconnect` | `{session_id}` or form-encoded | Close TCP connection               |
+| Method | Path                  | Body (JSON)                    | Description                                              |
+|--------|-----------------------|--------------------------------|----------------------------------------------------------|
+| POST   | `/api/connect`        | —                              | Open TCP connection, return `session_id`                 |
+| POST   | `/api/command`        | `{session_id, command}`        | Send one protocol command, return server lines           |
+| POST   | `/api/disconnect`     | `{session_id}` or form-encoded | Close TCP connection (also accepts `sendBeacon`)         |
+| POST   | `/api/encryption`     | `{session_id, enabled}`        | Toggle `ENC\|<hex>` wrapping for this session            |
+| GET    | `/api/notifications`  | `?session_id=…`                | Drain pending `NOTIFY` lines pushed by the server (v2.3) |
+| GET    | `/api/status`         | `?session_id=…`                | Run `STATUS` on a short-lived side connection            |
 
 `/api/disconnect` accepts both `application/json` and
 `application/x-www-form-urlencoded` so that `navigator.sendBeacon`
@@ -111,9 +117,11 @@ All endpoints return `{ ok, session_id, lines, error }`.
 
 ## Notes
 
-- The bridge is a **transparent forwarder**; it does not parse
-  application-layer semantics. `lines` in the response is the raw
-  array of protocol lines the server returned.
+- The bridge inspects `LOGIN` to SHA-256-hash the password (idempotent
+  against already-hashed values) and watches `OK|…` write responses to
+  invalidate its `LIST_ALL` cache. Otherwise it forwards bytes as-is;
+  `lines` in the response is the array of protocol lines the server
+  returned, post-decryption if `ENC|` was used.
 - Closing the browser tab sends a `QUIT` to the server via
   `navigator.sendBeacon`, gracefully releasing the TCP connection.
 - Concurrent requests on the **same session** are serialized by a

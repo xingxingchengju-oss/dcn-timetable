@@ -1,14 +1,14 @@
 # Timetable Inquiry System — Application-Layer Protocol Specification
 
-**Version:** 2.2  
-**Date:** 2026-05-02  
+**Version:** 2.4  
+**Date:** 2026-05-13  
 **Authors:** DCN Project Group
 
 ---
 
 ## 1. Overview
 
-This document defines the application-layer protocol used between clients and the Timetable Inquiry System server. The protocol is a line-oriented, text-based protocol running over TCP. A WebSocket transport variant is also specified for browser-based clients.
+This document defines the application-layer protocol used between clients and the Timetable Inquiry System server. The protocol is a line-oriented, text-based protocol running over TCP. Browser clients reach the same TCP server via a Flask HTTP bridge (`web/bridge.py`); the wire format on the upstream socket is identical.
 
 All messages are **UTF-8 encoded** and terminated with a single newline character (`\n`).
 
@@ -16,12 +16,12 @@ All messages are **UTF-8 encoded** and terminated with a single newline characte
 
 ## 2. Transport
 
-| Transport | Port  | Description                          |
-|-----------|-------|--------------------------------------|
-| TCP       | 50000 | C++ CLI client and general use       |
-| WebSocket | 50001 | Python GUI client and browser access |
+| Transport | Port  | Description                                                                |
+|-----------|-------|----------------------------------------------------------------------------|
+| TCP       | 50000 | All clients (C++ CLI, Python desktop GUI, and the web bridge upstream)     |
+| HTTP      | 50002 | Browser-facing Flask bridge (`web/bridge.py`) that relays JSON↔TCP for the web SPA |
 
-The server supports up to **64 simultaneous client connections**, each handled in a dedicated thread.
+The server supports up to **64 simultaneous client connections**, each handled in a dedicated thread. The HTTP bridge is an out-of-band relay — every browser session still consumes exactly one upstream TCP connection from the bridge to the server.
 
 ---
 
@@ -130,7 +130,7 @@ The `<password>` field accepts either:
 - **Plaintext** — any string whose length is not 64 characters
 - **SHA-256 hex digest** — a 64-character lowercase hex string of the password's SHA-256 hash
 
-The server stores passwords as SHA-256 hashes. When a plaintext password is received (length ≠ 64), the server hashes it before comparison. When a 64-character hex string is received, it is compared directly as a hash.
+The server accepts either form transparently: when a 64-character hex string arrives, it is treated as an already-hashed digest and compared by hashing the stored credential and matching the two digests; when any other length arrives, it is compared as plaintext. This lets the web client hash with `SubtleCrypto` before the bytes ever leave the browser (so plaintext never traverses the wire), while CLI demos remain readable. The credential store (`data/users.csv`) is currently plaintext for ease of grading; replacing it with pre-hashed values is a drop-in change because of this dual-format comparison.
 
 **Success response:**
 ```
@@ -478,19 +478,23 @@ STATUS
 
 **Response:**
 ```
-STATUS_INFO|active=<n>|total=<n>|uptime=<HH:MM:SS>
+STATUS_INFO|active=<n>|total=<n>|uptime=<HH:MM:SS>|cache_hits=<n>|cache_misses=<n>
 ```
 
-| Field    | Type    | Description                                       |
-|----------|---------|---------------------------------------------------|
-| `active` | integer | Number of currently connected clients             |
-| `total`  | integer | Total client connections accepted since startup   |
-| `uptime` | string  | Server uptime formatted as `HH:MM:SS`             |
+| Field          | Type    | Description                                                                       |
+|----------------|---------|-----------------------------------------------------------------------------------|
+| `active`       | integer | Number of currently connected clients                                             |
+| `total`        | integer | Total commands dispatched since startup (request counter, not connection counter) |
+| `uptime`       | string  | Server uptime formatted as `HH:MM:SS`                                             |
+| `cache_hits`   | integer | Server query-cache hits since startup (v2.4 — see §6.2)                           |
+| `cache_misses` | integer | Server query-cache misses since startup (v2.4)                                    |
+
+Fields are emitted as `key=value` pairs separated by `|`, in the order shown above. Clients should parse by key (not by position) so future fields can be appended without breaking older clients.
 
 **Example:**
 ```
 C: STATUS
-S: STATUS_INFO|active=3|total=47|uptime=01:00:21
+S: STATUS_INFO|active=3|total=47|uptime=01:00:21|cache_hits=12|cache_misses=5
 ```
 
 ---
@@ -549,8 +553,52 @@ The server closes the TCP connection immediately after sending `BYE`.
 Sent by the server immediately upon a new connection, before any client request.
 
 ```
-WELCOME|Timetable Inquiry System v2.1|Type HELP for commands
+WELCOME|Timetable Inquiry System v2.4|Type HELP for commands
 ```
+
+---
+
+#### `NOTIFY` (v2.3)
+
+The server pushes a `NOTIFY` line to every connected client **except the originator** whenever an admin write (`ADD` / `UPDATE` / `DELETE`) succeeds. This satisfies the assignment requirement that *"changes must be reflected immediately for all connected clients"*: receivers may show a notification and/or re-issue their last list query to refresh their view.
+
+**Format:**
+
+```
+NOTIFY|<op>|<code>|<section>
+```
+
+| Field    | Values                              | Description                            |
+|----------|-------------------------------------|----------------------------------------|
+| `op`     | `ADDED` / `UPDATED` / `DELETED`     | The kind of mutation                   |
+| `code`   | string                              | Course code of the affected record     |
+| `section`| string                              | Section identifier of the affected record |
+
+**Encryption:** `NOTIFY` is **always plaintext**, even on a session that has enabled the `ENC|` layer. This avoids per-session encryption-state lookup inside the server's broadcast path; the NOTIFY payload contains no secrets (only the identifier of a public course record).
+
+**Receiver behaviour:** clients should treat `NOTIFY` as **non-terminal** — it may interleave with regular responses. Clients that do not implement live UI updates should silently drop the line so it does not corrupt parsing of the next response.
+
+**Example:**
+
+```
+S: NOTIFY|UPDATED|COMP3003|S1
+S: NOTIFY|ADDED|COMP4999|S1
+S: NOTIFY|DELETED|MATH2001|S2
+```
+
+---
+
+## 6.2 Query Result Cache (v2.4 — server-side)
+
+The server memoizes responses to the read-only commands `QUERY`, `SEARCH_INSTRUCTOR`, `SEARCH_TIME`, `SEARCH_ADVANCED`, and `LIST_ALL`. A repeated request with the exact same command line is served from a small in-process `std::map<line, response>` without re-running the linear scan or taking the database mutex. This benefits **every** client uniformly — the C++ CLI, the Python desktop GUI, and the browser SPA all see lower latency on hot queries.
+
+**Invalidation:** every successful `ADD` / `UPDATE` / `DELETE` clears the entire cache before broadcasting `NOTIFY`, so post-write reads always reflect the new state. A 10-second per-entry TTL acts as a backstop if the data file is edited out-of-band.
+
+**Layering:** the browser path has a second, closer cache in `web/bridge.py` (5-second TTL on `LIST_ALL` only). The two caches compose: a browser `LIST_ALL` may hit the bridge cache (no TCP) → falls through to the server cache (no DB scan) → only finally falls through to the in-memory `vector<Course>` scan.
+
+**Observability:** server cache hit/miss counters are surfaced through `STATUS` as `cache_hits` and `cache_misses` (see §5.4). The server also prints `[cache] HIT  <cmd>` / `[cache] CLEAR (<reason>, N entries dropped)` to stdout for live demo purposes.
+
+The cache is opaque to clients — they never need to be aware of it; correctness is guaranteed by write-invalidation. NOTIFY broadcasts are unaffected (always recomputed and never cached).
 
 ---
 
@@ -570,6 +618,7 @@ WELCOME|Timetable Inquiry System v2.1|Type HELP for commands
 | `ERROR`       | S→C       | Command failed (see error code)              |
 | `INFO`        | S→C       | Informational text (used by HELP)            |
 | `BYE`         | S→C       | Server acknowledges QUIT; connection closing |
+| `NOTIFY`      | S→C       | Server-initiated asynchronous change notification (v2.3) |
 
 ---
 
@@ -623,13 +672,16 @@ Valid values for `day`: `Mon` `Tue` `Wed` `Thu` `Fri`
 ```
 [TCP connection on port 50000]
 
-S: WELCOME|Timetable Inquiry System v2.1|Type HELP for commands
+S: WELCOME|Timetable Inquiry System v2.4|Type HELP for commands
+
+C: STATUS
+S: STATUS_INFO|active=1|total=2|uptime=00:00:08|cache_hits=0|cache_misses=0
 
 C: LOGIN|student1|pass1234
 S: SUCCESS|student
 
 C: STATUS
-S: STATUS_INFO|active=1|total=12|uptime=00:05:05
+S: STATUS_INFO|active=1|total=12|uptime=00:05:05|cache_hits=4|cache_misses=3
 
 C: QUERY|COMP3003
 S: RESULT_BEGIN
@@ -679,6 +731,8 @@ S: BYE
 | Version | Date       | Changes                                                   |
 |---------|------------|-----------------------------------------------------------|
 | 1.0     | 2026-04    | Initial implementation (space-separated, port 8888)       |
-| 2.0     | 2026-04-28 | Unified `\|` separator; `RESULT_BEGIN`/`RESULT_END`; ports 50000/50001; structured error codes |
+| 2.0     | 2026-04-28 | Unified `\|` separator; `RESULT_BEGIN`/`RESULT_END`; TCP port 50000; structured error codes |
 | 2.1     | 2026-04-29 | Add STATUS command; add SEARCH_ADVANCED command; add ENC\| XOR encryption layer; add SHA-256 password hashing for LOGIN |
 | 2.2     | 2026-05-02 | Documentation corrections only (no wire-protocol change): SEARCH_ADVANCED updated to key=value format; STATUS uptime documented as HH:MM:SS; admin auth error code corrected to E202 in §5.3 |
+| 2.3     | 2026-05-11 | Add `NOTIFY` server-initiated broadcast for admin writes (assignment IV.4 compliance); NOTIFY is always plaintext (skips ENC layer). WELCOME banner version bumped. |
+| 2.4     | 2026-05-13 | Add server-side query-result cache (`QUERY`/`SEARCH_*`/`LIST_ALL`) with TTL = 10 s, invalidated on every successful write (§6.2). `STATUS` response now carries `cache_hits` and `cache_misses` fields (existing clients ignore unknown fields). `QUERY` switched from exact-only to exact-OR-prefix matching to honour the §5.2 contract. Doc-only fixes: `§2` transport table corrected to TCP/50000 + HTTP/50002 (no more WebSocket/50001 placeholder), `§5.1` password storage wording aligned with code, `§5.4` `total` clarified as commands not connections. `LOGIN` failure code reverted from `E201` to `E001` in code. WELCOME banner bumped to `v2.4`. |

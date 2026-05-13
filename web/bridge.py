@@ -6,7 +6,9 @@ transparent forwarder and does not parse application-layer semantics. Each
 browser session is mapped to one persistent TCP connection, because the
 server keeps authentication state per TCP connection.
 """
+import collections
 import hashlib
+import queue
 import socket
 import threading
 import time
@@ -67,7 +69,23 @@ def is_sha256_hex(s: str) -> bool:
 
 # ---- Session bookkeeping ----
 class Session:
-    """Per-browser-session state: one TCP socket plus its serialization lock.
+    """Per-browser-session state: one TCP socket + dedicated reader thread.
+
+    v2.3 change: the reader thread is the sole owner of `recv` on the session
+    socket. It classifies each line and routes it to one of two queues:
+
+      - response_queue : list[str] batches put when a terminal line ends the
+                         current command response. Only filled when `_awaiting`
+                         is True (i.e. a request is in flight).
+      - notify_queue   : deque[str] of `NOTIFY|...` server-pushed lines.
+                         Filled regardless of state — they can arrive any time.
+
+    This lets the bridge surface NOTIFY to the browser even when the session is
+    idle (no command in flight). The browser polls /api/notifications.
+
+    Idle state machine: if `_awaiting` is False and a non-NOTIFY line arrives,
+    it's logged and discarded — this protects against stray bytes corrupting
+    the next command's response.
 
     last_auth_cmd: the most recent successful LOGIN command (with the password
     already SHA-256 hashed). Held so that a transparent socket reconnect can
@@ -78,10 +96,77 @@ class Session:
 
     def __init__(self, sock):
         self.socket = sock
-        self.lock = threading.Lock()
-        self.recv_buffer = b""
-        self.encryption_enabled = False   # v2.1: opt-in ENC| layer
-        self.last_auth_cmd = None         # str | None — see class docstring
+        self.lock = threading.Lock()                # serializes request handlers
+        self.encryption_enabled = False             # v2.1: opt-in ENC| layer
+        self.last_auth_cmd = None                   # str | None
+        # v2.3 reader plumbing. Session is born "awaiting" — the very first
+        # batch the reader delivers is the server's WELCOME banner.
+        self.response_queue = queue.Queue()         # list[str] batches
+        self.notify_queue = collections.deque()
+        self._awaiting = True
+        self._awaiting_lock = threading.Lock()
+        self._current_batch = []
+        self._reader_alive = threading.Event()
+        self._reader_alive.set()
+        self._reader = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader.start()
+
+    # ---- reader thread ----
+
+    def _reader_loop(self):
+        """Sole owner of recv. Routes lines to response_queue / notify_queue."""
+        buffer = b""
+        sock = self.socket
+        sock.settimeout(RECV_POLL_TIMEOUT)
+        while self._reader_alive.is_set():
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError as e:
+                self._fail_pending(e)
+                return
+            if not chunk:
+                self._fail_pending(ConnectionError("server closed connection"))
+                return
+            buffer += chunk
+            while b"\n" in buffer:
+                idx = buffer.index(b"\n")
+                line = buffer[:idx].decode("utf-8", errors="replace").rstrip("\r")
+                buffer = buffer[idx + 1:]
+                self._handle_line(line)
+
+    def _handle_line(self, line: str):
+        # 1) NOTIFY: always to notify_queue, regardless of awaiting state.
+        if line.startswith("NOTIFY|"):
+            self.notify_queue.append(line)
+            # Invalidate the global LIST_ALL cache so the next poll sees fresh data.
+            _list_cache.clear()
+            return
+        # 2) Awaiting a command response: accumulate, put batch on terminal.
+        if self._awaiting:
+            self._current_batch.append(line)
+            if is_terminal_line(line) or (line.startswith("INFO|") and "QUIT" in line):
+                with self._awaiting_lock:
+                    self._awaiting = False
+                    batch = self._current_batch
+                    self._current_batch = []
+                self.response_queue.put(batch)
+            return
+        # 3) Idle + non-NOTIFY: log and discard so we don't poison the next reply.
+        print(f"[bridge] WARN idle reader got unexpected line: {line!r}")
+
+    def _fail_pending(self, exc: BaseException):
+        """Reader thread is exiting. Wake up any pending request with an error."""
+        self._reader_alive.clear()
+        with self._awaiting_lock:
+            if self._awaiting:
+                self._awaiting = False
+                self._current_batch = []
+                self.response_queue.put(exc)
+
+    def stop_reader(self):
+        self._reader_alive.clear()
 
 
 sessions = {}                       # session_id -> Session
@@ -97,76 +182,11 @@ def is_terminal_line(line: str) -> bool:
     return False
 
 
-def recv_until_terminal(session: Session):
-    """Read lines from the socket until a terminal line is seen.
-
-    Three timeout layers:
-    - Initial:  if we haven't received the FIRST byte within RECV_INITIAL_TIMEOUT,
-                give up (server is dead or hung).
-    - Idle:     once bytes have started arriving, return as soon as the wire
-                has been quiet for RECV_IDLE_TIMEOUT — covers HELP cleanly and
-                avoids false timeouts on slow LAN.
-    - Absolute: hard cap at RECV_MAX_TIMEOUT so we can never hang forever.
-
-    A terminal line (RESULT_END / OK / ERROR / etc.) returns immediately
-    regardless of timeouts — the common path is microseconds on localhost.
-    """
-    sock = session.socket
-    buffer = session.recv_buffer
-    lines = []
-    started_at = time.time()
-    last_byte_at = None        # None until the first chunk arrives
-
-    sock.settimeout(RECV_POLL_TIMEOUT)
-
-    while True:
-        # Drain any complete lines already in the buffer.
-        while b"\n" in buffer:
-            idx = buffer.index(b"\n")
-            text = buffer[:idx].decode("utf-8", errors="replace").rstrip("\r")
-            buffer = buffer[idx + 1:]
-            lines.append(text)
-            # Fast path: any known terminal marker → return immediately.
-            # This covers RESULT_END, OK|, ERROR|, FAILURE|, SUCCESS|,
-            # RESULT_NONE|, WELCOME|, STATUS_INFO|, ENC|, BYE.
-            if is_terminal_line(text):
-                session.recv_buffer = buffer
-                return lines
-            # HELP also has no formal terminator; the last INFO line mentions
-            # QUIT, so use that as an early exit (saves the idle timeout).
-            if text.startswith("INFO|") and "QUIT" in text:
-                session.recv_buffer = buffer
-                return lines
-
-        now = time.time()
-        elapsed = now - started_at
-
-        # Hard cap — never hang forever.
-        if elapsed > RECV_MAX_TIMEOUT:
-            session.recv_buffer = buffer
-            raise TimeoutError(f"recv exceeded {RECV_MAX_TIMEOUT}s")
-
-        # Initial timeout: nothing has arrived yet and we've waited long enough.
-        if last_byte_at is None and elapsed > RECV_INITIAL_TIMEOUT:
-            session.recv_buffer = buffer
-            raise TimeoutError(f"no response after {RECV_INITIAL_TIMEOUT}s")
-
-        # Idle timeout: bytes started but stopped — assume server is done sending.
-        # (Handles HELP and any other command without a strict terminal.)
-        if last_byte_at is not None and (now - last_byte_at) > RECV_IDLE_TIMEOUT:
-            session.recv_buffer = buffer
-            return lines
-
-        try:
-            chunk = sock.recv(4096)
-        except socket.timeout:
-            continue
-        if not chunk:
-            # Remote closed the connection.
-            session.recv_buffer = buffer
-            return lines
-        buffer += chunk
-        last_byte_at = time.time()
+# Note (v2.3): the legacy recv_until_terminal() free function was retired when
+# Session gained its dedicated reader thread. All recv work now happens inside
+# Session._reader_loop, which classifies each line into response_queue or
+# notify_queue. RECV_INITIAL_TIMEOUT / RECV_MAX_TIMEOUT are still honoured at
+# the _send_command / _await_initial_batch level.
 
 
 def _apply_login_hash(cmd: str) -> str:
@@ -194,6 +214,11 @@ def _send_command(session: Session, cmd: str):
     ENC| response unwrapping transparently.  Must be called while holding
     session.lock.
 
+    v2.3: the actual recv is done by the session's reader thread; this function
+    flips the `_awaiting` flag, sends, and waits on session.response_queue. The
+    queue may yield either a list[str] (batch of lines) or an Exception (reader
+    thread died); the latter is raised here so the caller can trigger a reconnect.
+
     raw_request / raw_response are the actual bytes sent to / received from the
     TCP server (as utf-8 strings, terminating \n included). Returned so the
     web UI can render a Wire Preview without ever holding the XOR key.
@@ -208,15 +233,31 @@ def _send_command(session: Session, cmd: str):
     else:
         payload = cmd
 
-    # 3. Send.
+    # 3. Arm the reader thread to capture the next batch.
+    with session._awaiting_lock:
+        session._awaiting = True
+        session._current_batch = []
+
+    # 4. Send.
     raw_request = payload + "\n"
     session.socket.sendall(raw_request.encode("utf-8"))
 
-    # 4. Receive until terminal line.
-    lines = recv_until_terminal(session)
+    # 5. Wait for the reader to deliver a complete batch (or an error).
+    try:
+        result = session.response_queue.get(timeout=RECV_MAX_TIMEOUT)
+    except queue.Empty:
+        # Reader is still alive but nothing arrived — disarm.
+        with session._awaiting_lock:
+            session._awaiting = False
+            session._current_batch = []
+        raise TimeoutError(f"recv exceeded {RECV_MAX_TIMEOUT}s")
+
+    if isinstance(result, BaseException):
+        raise result
+    lines = result
     raw_response = "\n".join(lines) + ("\n" if lines else "")
 
-    # 5. If encryption is on, the single response line starts with "ENC|".
+    # 6. If encryption is on, the single response line starts with "ENC|".
     #    Decrypt it and split back into individual lines.
     if session.encryption_enabled and lines and lines[-1].startswith("ENC|"):
         hex_part = lines[-1][4:].strip()
@@ -225,7 +266,7 @@ def _send_command(session: Session, cmd: str):
         # Re-split the decrypted multi-line payload into individual lines.
         lines = [l.rstrip("\r") for l in plaintext.split("\n") if l.rstrip("\r")]
 
-    # 6. Track auth state so transparent reconnects can restore it.
+    # 7. Track auth state so transparent reconnects can restore it.
     upper = cmd.upper()
     first = lines[0] if lines else ""
     if upper.startswith("LOGIN|"):
@@ -273,6 +314,20 @@ def _open_tcp(timeout=3.0):
     return sock
 
 
+def _await_initial_batch(session: Session, label: str = "WELCOME"):
+    """Wait for the first batch the reader delivers (e.g. WELCOME).
+
+    Session is born with `_awaiting=True` precisely so the reader thread routes
+    the very first server message into response_queue, even though no client
+    code has called `_send_command` yet. This avoids a race where WELCOME could
+    arrive on the wire before we've had a chance to "arm" the reader.
+    """
+    result = session.response_queue.get(timeout=RECV_INITIAL_TIMEOUT)
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
+
 @app.post("/api/connect")
 def api_connect():
     try:
@@ -281,8 +336,9 @@ def api_connect():
         return make_response(False, error=f"Cannot reach TCP server: {e}", status=502)
     session = Session(sock)
     try:
-        lines = recv_until_terminal(session)
+        lines = _await_initial_batch(session, "WELCOME")
     except Exception as e:
+        session.stop_reader()
         try:
             sock.close()
         except OSError:
@@ -314,17 +370,32 @@ def _reconnect_in_place(session: Session) -> bool:
     except OSError:
         return False
 
-    # Swap in the new socket.
+    # Stop the old reader thread. Closing the old socket unblocks recv().
+    session.stop_reader()
     try:
         session.socket.close()
     except OSError:
         pass
+    if session._reader.is_alive():
+        session._reader.join(timeout=2.0)
+
+    # Reset session state and swap in the new socket.
     session.socket = new_sock
-    session.recv_buffer = b""
+    session.response_queue = queue.Queue()
+    session.notify_queue.clear()
+    # Born-awaiting again: first batch off the new socket will be WELCOME.
+    with session._awaiting_lock:
+        session._awaiting = True
+        session._current_batch = []
+    # Start a fresh reader thread bound to the new socket.
+    session._reader_alive = threading.Event()
+    session._reader_alive.set()
+    session._reader = threading.Thread(target=session._reader_loop, daemon=True)
+    session._reader.start()
 
     # Drain WELCOME so it doesn't pollute the next response.
     try:
-        recv_until_terminal(session)
+        _await_initial_batch(session, "WELCOME (reconnect)")
     except Exception as e:
         print(f"[bridge] reconnect: WELCOME drain failed: {e}")
         return False
@@ -421,6 +492,26 @@ def api_disconnect():
     return make_response(True, session_id=sid, lines=[])
 
 
+@app.get("/api/notifications")
+def api_notifications():
+    """Drain and return any NOTIFY|... lines that arrived on this session.
+
+    v2.3: the session's reader thread pushes server-initiated NOTIFY broadcasts
+    into a deque. The browser polls this endpoint (~every 2s) and gets back
+    a list of strings — empty if nothing new. Pure pull-based; no websockets,
+    no long-poll, no extra server load when idle.
+    """
+    sid = request.args.get("session_id")
+    with sessions_lock:
+        session = sessions.get(sid) if sid else None
+    if session is None:
+        return jsonify({"ok": False, "error": "invalid session"}), 400
+    drained = []
+    while session.notify_queue:
+        drained.append(session.notify_queue.popleft())
+    return jsonify({"ok": True, "notifications": drained})
+
+
 @app.post("/api/encryption")
 def api_set_encryption():
     """Toggle ENC| encryption for a session. Body: {session_id, enabled: bool}"""
@@ -456,15 +547,15 @@ def api_status():
     except OSError as e:
         return jsonify({"ok": False, "error": f"Cannot reach server: {e}"}), 502
 
+    tmp = Session(sock)   # spawns its own reader thread
     try:
-        # Read the WELCOME banner, then send STATUS, then read the response.
-        tmp = Session(sock)
-        recv_until_terminal(tmp)          # discard WELCOME
+        _await_initial_batch(tmp, "WELCOME (status)")    # discard WELCOME
         lines, _req, _resp = _send_command(tmp, "STATUS")
     except Exception as e:
         print(f"[bridge] status poll error: {e}")
         return jsonify({"ok": False, "error": f"Connection error: {e}"}), 502
     finally:
+        tmp.stop_reader()
         try:
             sock.close()
         except OSError:
@@ -493,8 +584,9 @@ def _drop_session(sid, reason="", graceful=False):
                 # QUIT must also go through the encryption pipeline if enabled.
                 with session.lock:
                     _send_command(session, "QUIT")
-            except OSError:
+            except (OSError, Exception):
                 pass
+        session.stop_reader()
         session.socket.close()
     except OSError:
         pass

@@ -27,9 +27,68 @@ Database db;
 Logger logger("logs/server.log");
 std::mutex db_mutex;
 
+// Connected-client registry for NOTIFY broadcast (protocol v2.3, assignment IV.4).
+// A separate mutex from db_mutex to avoid lock-ordering issues — broadcastNotify()
+// must never run while db_mutex is held.
+std::vector<SOCKET> g_clients;
+std::mutex          g_clients_mutex;
+
 std::atomic<int>  active_clients{0};
 std::atomic<long> total_requests{0};
 std::time_t       server_start_time = 0;
+
+// ---- Server-side query result cache (v2.4) ----
+// Memoizes responses to read-only commands (QUERY / SEARCH_* / LIST_ALL) so
+// repeated queries skip the O(n) scan of `courses` and the db_mutex round trip.
+// Benefits ALL clients (C++ CLI, Python GUI, web SPA) — the bridge's LIST_ALL
+// cache (web/bridge.py) is a second, closer layer that further saves a TCP
+// hop for browser sessions.
+//
+// Invalidation: any successful ADD/UPDATE/DELETE clears the whole cache, so
+// after a write the next read pays one full miss and re-populates with fresh
+// data. TTL = 10 s tombstone catches the rare case where data files were
+// edited out-of-band (e.g. someone hand-edited timetable.csv on disk).
+struct QueryCacheEntry {
+    std::time_t timestamp;
+    std::string response;
+};
+std::map<std::string, QueryCacheEntry> g_query_cache;
+std::mutex                             g_query_cache_mutex;
+std::atomic<long>                      g_cache_hits{0};
+std::atomic<long>                      g_cache_misses{0};
+static const long QUERY_CACHE_TTL_SEC = 10;
+
+static bool isCacheableCmd(const std::string& cmd) {
+    return cmd == "QUERY"             || cmd == "SEARCH_INSTRUCTOR" ||
+           cmd == "SEARCH_TIME"       || cmd == "SEARCH_ADVANCED"   ||
+           cmd == "LIST_ALL";
+}
+
+static bool cacheLookup(const std::string& key, std::string& out) {
+    std::lock_guard<std::mutex> lk(g_query_cache_mutex);
+    auto it = g_query_cache.find(key);
+    if (it == g_query_cache.end()) return false;
+    if (std::time(nullptr) - it->second.timestamp > QUERY_CACHE_TTL_SEC) {
+        g_query_cache.erase(it);
+        return false;
+    }
+    out = it->second.response;
+    return true;
+}
+
+static void cacheStore(const std::string& key, const std::string& resp) {
+    std::lock_guard<std::mutex> lk(g_query_cache_mutex);
+    g_query_cache[key] = QueryCacheEntry{ std::time(nullptr), resp };
+}
+
+static void cacheClear(const char* reason) {
+    std::lock_guard<std::mutex> lk(g_query_cache_mutex);
+    if (!g_query_cache.empty()) {
+        std::cout << "[cache] CLEAR (" << reason << ", "
+                  << g_query_cache.size() << " entries dropped)\n";
+        g_query_cache.clear();
+    }
+}
 
 // Session state per client
 struct ClientSession {
@@ -57,12 +116,61 @@ std::vector<std::string> split(const std::string& s, char delim = '|') {
     return tokens;
 }
 
+// Broadcast a NOTIFY line to every connected client except `origin`.
+// Always sends plaintext (the ENC layer is per-message and opt-in; NOTIFY skips it
+// per protocol.md §6 — the payload carries no secrets and this avoids per-session
+// state lookup in the broadcast hot path).
+//
+// Snapshot pattern: copy g_clients under g_clients_mutex, release the lock, then
+// send outside the lock so a slow socket can't stall broadcasts to others.
+// Sockets that fail to send are removed from g_clients proactively; the actual
+// closesocket() still happens in the owning clientHandler thread when its recv
+// returns 0 / RST.
+static void broadcastNotify(const std::string& line, SOCKET origin) {
+    std::vector<SOCKET> snap;
+    {
+        std::lock_guard<std::mutex> lk(g_clients_mutex);
+        snap = g_clients;
+    }
+
+    std::vector<SOCKET> failed;
+    for (SOCKET s : snap) {
+        if (s == origin) continue;
+        int n = send(s, line.c_str(), (int)line.size(), 0);
+        if (n == SOCKET_ERROR) failed.push_back(s);
+    }
+
+    if (!failed.empty()) {
+        std::lock_guard<std::mutex> lk(g_clients_mutex);
+        for (SOCKET dead : failed) {
+            g_clients.erase(std::remove(g_clients.begin(), g_clients.end(), dead),
+                            g_clients.end());
+        }
+    }
+}
+
 // Inner dispatch: receives a trimmed plaintext command line, returns a plaintext response.
 static std::string dispatchRequest(const std::string& line, ClientSession& session) {
     ++total_requests;
     std::vector<std::string> parts = split(line, '|');
     std::string cmd = parts[0];
     for (auto& c : cmd) c = toupper(c);
+
+    // v2.4: server-side query cache. Skip the work entirely if we've answered
+    // this exact line within QUERY_CACHE_TTL_SEC and nothing has been written
+    // since. The cache key is the full line so `QUERY|COMP3003` and
+    // `SEARCH_INSTRUCTOR|Chan` stay distinct, and RESULT_NONE answers are
+    // cached too (a stable "nothing matches" is just as expensive to recompute).
+    bool cacheable = isCacheableCmd(cmd);
+    if (cacheable) {
+        std::string cached;
+        if (cacheLookup(line, cached)) {
+            ++g_cache_hits;
+            std::cout << "[cache] HIT  " << line << "\n";
+            return cached;
+        }
+        ++g_cache_misses;
+    }
 
     // LOGIN|username|password
     if (cmd == "LOGIN") {
@@ -72,7 +180,7 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
         std::string role = db.authenticate(user, pass);
         if (role.empty()) {
             logger.log("Failed login attempt: " + user);
-            return "FAILURE|E201|Invalid username or password\n";
+            return "FAILURE|E001|Invalid username or password\n";
         }
         session.authenticated = true;
         session.role = role;
@@ -94,12 +202,19 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
         if (parts.size() < 2) return "ERROR|E101|Missing course code\n";
         std::string code = parts[1];
         for (auto& c : code) c = toupper(c);
-        std::lock_guard<std::mutex> lock(db_mutex);
-        auto results = db.queryByCode(code);
-        if (results.empty()) return "RESULT_NONE|No courses found for " + code + "\n";
-        std::string resp = "RESULT_BEGIN\n";
-        for (auto& r : results) resp += r.toProtocol() + "\n";
-        resp += "RESULT_END\n";
+        std::string resp;
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            auto results = db.queryByCode(code);
+            if (results.empty()) {
+                resp = "RESULT_NONE|No courses found for " + code + "\n";
+            } else {
+                resp = "RESULT_BEGIN\n";
+                for (auto& r : results) resp += r.toProtocol() + "\n";
+                resp += "RESULT_END\n";
+            }
+        }
+        cacheStore(line, resp);
         return resp;
     }
 
@@ -107,36 +222,57 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
     if (cmd == "SEARCH_INSTRUCTOR") {
         if (parts.size() < 2) return "ERROR|E101|Missing instructor name\n";
         std::string name = parts[1];
-        std::lock_guard<std::mutex> lock(db_mutex);
-        auto results = db.queryByInstructor(name);
-        if (results.empty()) return "RESULT_NONE|No courses found for instructor: " + name + "\n";
-        std::string resp = "RESULT_BEGIN\n";
-        for (auto& r : results) resp += r.toProtocol() + "\n";
-        resp += "RESULT_END\n";
+        std::string resp;
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            auto results = db.queryByInstructor(name);
+            if (results.empty()) {
+                resp = "RESULT_NONE|No courses found for instructor: " + name + "\n";
+            } else {
+                resp = "RESULT_BEGIN\n";
+                for (auto& r : results) resp += r.toProtocol() + "\n";
+                resp += "RESULT_END\n";
+            }
+        }
+        cacheStore(line, resp);
         return resp;
     }
 
     // LIST_ALL[|semester]
     if (cmd == "LIST_ALL") {
         std::string sem = (parts.size() >= 2) ? parts[1] : "";
-        std::lock_guard<std::mutex> lock(db_mutex);
-        auto results = db.listAll(sem);
-        if (results.empty()) return "RESULT_NONE|No courses found\n";
-        std::string resp = "RESULT_BEGIN\n";
-        for (auto& r : results) resp += r.toProtocol() + "\n";
-        resp += "RESULT_END\n";
+        std::string resp;
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            auto results = db.listAll(sem);
+            if (results.empty()) {
+                resp = "RESULT_NONE|No courses found\n";
+            } else {
+                resp = "RESULT_BEGIN\n";
+                for (auto& r : results) resp += r.toProtocol() + "\n";
+                resp += "RESULT_END\n";
+            }
+        }
+        cacheStore(line, resp);
         return resp;
     }
 
     // SEARCH_TIME|day|time
     if (cmd == "SEARCH_TIME") {
         if (parts.size() < 3) return "ERROR|E101|Usage: SEARCH_TIME|<day>|<time>\n";
-        std::lock_guard<std::mutex> lock(db_mutex);
-        auto results = db.queryByTime(parts[1], parts[2]);
-        if (results.empty()) return "RESULT_NONE|No courses found at " + parts[1] + " " + parts[2] + "\n";
-        std::string resp = "RESULT_BEGIN\n";
-        for (auto& r : results) resp += r.toProtocol() + "\n";
-        resp += "RESULT_END\n";
+        std::string resp;
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            auto results = db.queryByTime(parts[1], parts[2]);
+            if (results.empty()) {
+                resp = "RESULT_NONE|No courses found at " + parts[1] + " " + parts[2] + "\n";
+            } else {
+                resp = "RESULT_BEGIN\n";
+                for (auto& r : results) resp += r.toProtocol() + "\n";
+                resp += "RESULT_END\n";
+            }
+        }
+        cacheStore(line, resp);
         return resp;
     }
 
@@ -155,12 +291,19 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
             else if (k == "semester")   semester  = v;
             else if (k == "time_range") timeRange = v;
         }
-        std::lock_guard<std::mutex> lock(db_mutex);
-        auto results = db.queryAdvanced(keyword, day, semester, timeRange);
-        if (results.empty()) return "RESULT_NONE|No courses match the criteria\n";
-        std::string resp = "RESULT_BEGIN\n";
-        for (auto& r : results) resp += r.toProtocol() + "\n";
-        resp += "RESULT_END\n";
+        std::string resp;
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            auto results = db.queryAdvanced(keyword, day, semester, timeRange);
+            if (results.empty()) {
+                resp = "RESULT_NONE|No courses match the criteria\n";
+            } else {
+                resp = "RESULT_BEGIN\n";
+                for (auto& r : results) resp += r.toProtocol() + "\n";
+                resp += "RESULT_END\n";
+            }
+        }
+        cacheStore(line, resp);
         return resp;
     }
 
@@ -184,9 +327,16 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
         c.duration   = parts[7];
         c.classroom  = parts[8];
         c.semester   = parts[9];
-        std::lock_guard<std::mutex> lock(db_mutex);
-        if (db.addCourse(c)) {
+        bool ok;
+        {   // Scope db_mutex so it's released before broadcasting.
+            std::lock_guard<std::mutex> lock(db_mutex);
+            ok = db.addCourse(c);
+        }
+        if (ok) {
+            cacheClear("ADD");
             logger.log("Admin " + session.username + " added course: " + c.code);
+            broadcastNotify("NOTIFY|ADDED|" + c.code + "|" + c.section + "\n",
+                            session.sock);
             return "OK|Course added: " + c.code + "|" + c.section + "\n";
         }
         return "ERROR|E301|Duplicate course: " + c.code + " section " + c.section + " already exists\n";
@@ -200,9 +350,16 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
         std::string field   = parts[3];
         std::string value   = parts[4];
         for (auto& c2 : field) c2 = toupper(c2);
-        std::lock_guard<std::mutex> lock(db_mutex);
-        if (db.updateCourse(code, section, field, value)) {
+        bool ok;
+        {   // Scope db_mutex so it's released before broadcasting.
+            std::lock_guard<std::mutex> lock(db_mutex);
+            ok = db.updateCourse(code, section, field, value);
+        }
+        if (ok) {
+            cacheClear("UPDATE");
             logger.log("Admin " + session.username + " updated " + code + "/" + section + " " + field + "=" + value);
+            broadcastNotify("NOTIFY|UPDATED|" + code + "|" + section + "\n",
+                            session.sock);
             return "OK|Updated " + code + "|" + section + ": " + field + " -> " + value + "\n";
         }
         return "ERROR|E302|Course not found: " + code + " section " + section + "\n";
@@ -211,18 +368,29 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
     // DELETE|code|section
     if (cmd == "DELETE") {
         if (parts.size() < 3) return "ERROR|E101|Usage: DELETE|<code>|<section>\n";
-        std::lock_guard<std::mutex> lock(db_mutex);
-        if (db.deleteCourse(parts[1], parts[2])) {
-            logger.log("Admin " + session.username + " deleted " + parts[1] + "/" + parts[2]);
-            return "OK|Deleted " + parts[1] + "|" + parts[2] + "\n";
+        std::string code    = parts[1];
+        std::string section = parts[2];
+        bool ok;
+        {   // Scope db_mutex so it's released before broadcasting.
+            std::lock_guard<std::mutex> lock(db_mutex);
+            ok = db.deleteCourse(code, section);
         }
-        return "ERROR|E302|Course not found: " + parts[1] + " section " + parts[2] + "\n";
+        if (ok) {
+            cacheClear("DELETE");
+            logger.log("Admin " + session.username + " deleted " + code + "/" + section);
+            broadcastNotify("NOTIFY|DELETED|" + code + "|" + section + "\n",
+                            session.sock);
+            return "OK|Deleted " + code + "|" + section + "\n";
+        }
+        return "ERROR|E302|Course not found: " + code + " section " + section + "\n";
     }
 
     // STATUS
     if (cmd == "STATUS") {
         int  a = active_clients.load();
         long t = total_requests.load();
+        long ch = g_cache_hits.load();
+        long cm = g_cache_misses.load();
         std::time_t now = std::time(nullptr);
         long secs = (long)(now - server_start_time);
         long hh = secs / 3600;
@@ -230,9 +398,11 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
         long ss = secs % 60;
         char tbuf[16];
         snprintf(tbuf, sizeof(tbuf), "%02ld:%02ld:%02ld", hh, mm, ss);
-        return "STATUS_INFO|active=" + std::to_string(a) +
-               "|total="  + std::to_string(t) +
-               "|uptime=" + std::string(tbuf) + "\n";
+        return "STATUS_INFO|active="    + std::to_string(a)  +
+               "|total="                + std::to_string(t)  +
+               "|uptime="               + std::string(tbuf)  +
+               "|cache_hits="           + std::to_string(ch) +
+               "|cache_misses="         + std::to_string(cm) + "\n";
     }
 
     // HELP
@@ -305,8 +475,14 @@ void clientHandler(SOCKET clientSock, std::string clientAddr) {
     setsockopt(clientSock, IPPROTO_TCP, TCP_NODELAY,
                (const char*)&noDelay, sizeof(noDelay));
 
+    // Register this socket in the broadcast list (v2.3 NOTIFY).
+    {
+        std::lock_guard<std::mutex> lk(g_clients_mutex);
+        g_clients.push_back(clientSock);
+    }
+
     // Send welcome banner
-    std::string welcome = "WELCOME|Timetable Inquiry System v2.1|Type HELP for commands\n";
+    std::string welcome = "WELCOME|Timetable Inquiry System v2.4|Type HELP for commands\n";
     send(clientSock, welcome.c_str(), (int)welcome.size(), 0);
 
     char buf[BUFFER_SIZE];
@@ -334,6 +510,11 @@ void clientHandler(SOCKET clientSock, std::string clientAddr) {
     }
 done:
     --active_clients;
+    {
+        std::lock_guard<std::mutex> lk(g_clients_mutex);
+        g_clients.erase(std::remove(g_clients.begin(), g_clients.end(), clientSock),
+                        g_clients.end());
+    }
     logger.log("Client disconnected: " + clientAddr);
     closesocket(clientSock);
 }

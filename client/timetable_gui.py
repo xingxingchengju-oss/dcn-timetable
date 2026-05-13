@@ -1,7 +1,7 @@
 """
 Course Timetable Inquiry System — GUI Client
 Requires: pip install customtkinter
-Connects to the C++ server at 127.0.0.1:8888
+Connects to the C++ server at 127.0.0.1:50000 (protocol v2.4, pipe-delimited)
 """
 
 import socket
@@ -33,7 +33,7 @@ GOLD      = "#E3B341"
 
 # ─── Network ───────────────────────────────────────────────────────────────────
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8888
+DEFAULT_PORT = 50000
 BUFFER_SIZE  = 8192
 
 
@@ -57,21 +57,29 @@ class TimetableClient:
 
     def _recv_until_done(self):
         data = b""
+        # Protocol v2.x terminal markers (underscore + pipe). Substring matched.
         TERMINALS = [
-            b"RESULT END\n", b"RESULT NONE", b"SUCCESS", b"FAILURE",
-            b"ERROR", b"OK ", b"BYE", b"WELCOME",
+            b"RESULT_END\n", b"RESULT_NONE|", b"SUCCESS|", b"FAILURE|",
+            b"ERROR|", b"OK|", b"BYE", b"WELCOME|", b"STATUS_INFO|",
         ]
         while True:
             chunk = self.sock.recv(BUFFER_SIZE)
             if not chunk:
                 break
             data += chunk
-            # HELP response ends with QUIT line
-            if data.startswith(b"HELP") and b"QUIT" in data:
+            # HELP response is a series of INFO| lines; the last one mentions QUIT.
+            if b"INFO|" in data and b"QUIT" in data:
                 break
             elif any(t in data for t in TERMINALS):
                 break
-        return data.decode(errors="replace")
+        # v2.3: silently drop any NOTIFY|... lines that the server may have
+        # broadcast into this response (admin writes from other clients). This
+        # GUI doesn't show realtime updates — the next user query will pick up
+        # the new data because the server has a single in-memory source.
+        text = data.decode(errors="replace")
+        return "\n".join(
+            line for line in text.split("\n") if not line.startswith("NOTIFY|")
+        )
 
     def close(self):
         if self.sock:
@@ -246,7 +254,7 @@ class ConnectDialog(ctk.CTkToplevel):
                                   text_color=TEXT, width=260)
         self._host.insert(0, DEFAULT_HOST)
         self._host.pack(pady=4)
-        self._port = ctk.CTkEntry(self, placeholder_text="Port (8888)", height=38,
+        self._port = ctk.CTkEntry(self, placeholder_text="Port (50000)", height=38,
                                   fg_color=BG_INPUT, border_color=BORDER,
                                   text_color=TEXT, width=260)
         self._port.insert(0, str(DEFAULT_PORT))
@@ -503,7 +511,7 @@ class App(ctk.CTk):
         entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         box = ResultsBox(f)
         def go():
-            self._run("QUERY " + entry.get().strip().upper(), box)
+            self._run("QUERY|" + entry.get().strip().upper(), box)
         entry.bind("<Return>", lambda e: go())
         self._action_btn(row, "Search", go).pack(side="left")
         ctk.CTkLabel(f, text="Results",
@@ -527,7 +535,7 @@ class App(ctk.CTk):
         entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         box = ResultsBox(f)
         def go():
-            self._run("SEARCH_INSTRUCTOR " + entry.get().strip(), box)
+            self._run("SEARCH_INSTRUCTOR|" + entry.get().strip(), box)
         entry.bind("<Return>", lambda e: go())
         self._action_btn(row, "Search", go).pack(side="left")
         ctk.CTkLabel(f, text="Results",
@@ -551,7 +559,8 @@ class App(ctk.CTk):
         entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         box = ResultsBox(f)
         def go():
-            self._run("LIST_ALL " + entry.get().strip(), box)
+            sem = entry.get().strip()
+            self._run("LIST_ALL|" + sem if sem else "LIST_ALL", box)
         entry.bind("<Return>", lambda e: go())
         self._action_btn(row, "List All", go, ACCENT2).pack(side="left")
         ctk.CTkLabel(f, text="Results",
@@ -586,7 +595,7 @@ class App(ctk.CTk):
         time_e.pack(side="left", padx=(0, 10))
         box = ResultsBox(f)
         def go():
-            self._run(f"SEARCH_TIME {day_var.get()} {time_e.get().strip()}", box)
+            self._run(f"SEARCH_TIME|{day_var.get()}|{time_e.get().strip()}", box)
         time_e.bind("<Return>", lambda e: go())
         self._action_btn(row, "Search", go).pack(side="left")
         ctk.CTkLabel(f, text="Results",
@@ -634,7 +643,7 @@ class App(ctk.CTk):
             if not all(vals):
                 msgbox.showwarning("Missing", "Please fill all fields.")
                 return
-            self._run("ADD " + "|".join(vals), box)
+            self._run("ADD|" + "|".join(vals), box)
         self._action_btn(card, "Add Course", go, ACCENT2).pack(padx=20, pady=(0, 16), anchor="e")
         ctk.CTkLabel(f, text="Results",
                      font=ctk.CTkFont("Segoe UI", 12, "bold"),
@@ -684,7 +693,7 @@ class App(ctk.CTk):
 
         box = ResultsBox(f)
         def go():
-            cmd = f"UPDATE {code_e.get().strip()} {sec_e.get().strip()} {field_var.get()} {val_e.get().strip()}"
+            cmd = f"UPDATE|{code_e.get().strip()}|{sec_e.get().strip()}|{field_var.get()}|{val_e.get().strip()}"
             self._run(cmd, box)
         self._action_btn(card, "Update", go, GOLD).pack(padx=20, pady=(0, 16), anchor="e")
         ctk.CTkLabel(f, text="Results",
@@ -719,7 +728,7 @@ class App(ctk.CTk):
         def go():
             c, s = code_e.get().strip(), sec_e.get().strip()
             if msgbox.askyesno("Confirm Delete", f"Delete {c}/{s}? This cannot be undone."):
-                self._run(f"DELETE {c} {s}", box)
+                self._run(f"DELETE|{c}|{s}", box)
         btn = ctk.CTkButton(row_e, text="Delete", height=40, corner_radius=8,
                             fg_color=WARN, hover_color="#D9584A",
                             font=ctk.CTkFont("Segoe UI", 13, "bold"),
@@ -740,32 +749,49 @@ class App(ctk.CTk):
                      text_color=TEXT, anchor="w").pack(fill="x", padx=20, pady=(16, 8))
         box = ResultsBox(card)
         box.pack(fill="both", expand=True, padx=20, pady=(0, 16))
-        HELP_TEXT = """Commands (Client → Server)
+        HELP_TEXT = """Application Protocol v2.4  (pipe-delimited, newline-terminated)
+See docs/protocol.md for the full specification.
+
+Commands (Client → Server)
 ─────────────────────────────────────────────────────
-  LOGIN <user> <pass>               Authenticate
+  LOGIN|<user>|<password>           Authenticate
   LOGOUT                            End session
-  QUERY <code>                      Search by course code
-  SEARCH_INSTRUCTOR <name>          Search by instructor
-  SEARCH_TIME <day> <HH:MM>         Search by time slot
-  LIST_ALL [semester]               List all / filter by semester
-  ADD code|title|sec|instr|...      Add course (admin)
-  UPDATE <code> <sec> <field> <val> Modify a field (admin)
-  DELETE <code> <section>           Remove course (admin)
+  QUERY|<code>                      Search by course code
+  SEARCH_INSTRUCTOR|<name>          Search by instructor (substring)
+  SEARCH_TIME|<day>|<HH:MM>         Search by exact time slot
+  SEARCH_ADVANCED|key=val|...       Multi-field filter   (CLI / web only)
+                                    keys: keyword, day, semester, time_range
+  LIST_ALL[|<semester>]             List all / filter by semester
+  STATUS                            Server stats          (CLI / web only)
+  ADD|code|title|sec|instr|day|time|duration|room|sem    Add course   [admin]
+  UPDATE|<code>|<sec>|<field>|<val> Modify a field                    [admin]
+  DELETE|<code>|<section>           Remove course                     [admin]
   HELP                              Show commands
   QUIT                              Disconnect
 
+Encryption (optional, web GUI only)
+─────────────────────────────────────────────────────
+  ENC|<hex>     Any command may be XOR-encrypted + hex-encoded;
+                the server replies in the same ENC|... form.
+
+Server-Initiated Messages
+─────────────────────────────────────────────────────
+  WELCOME|…              Connection banner
+  NOTIFY|<op>|<code>|<sec>   Admin write broadcast (op = ADDED/UPDATED/DELETED)
+
 Server Responses
 ─────────────────────────────────────────────────────
-  WELCOME …         Connection banner
-  SUCCESS …         Operation OK
-  FAILURE …         Auth or operation failed
-  RESULT BEGIN      Start of multi-line result
-  RESULT <data>     One result record
-  RESULT END        End of results
-  RESULT NONE …     No matching records
-  OK …              Admin operation confirmed
-  ERROR …           Bad request or unauthorized
-  BYE               Disconnect acknowledged
+  SUCCESS|…              Operation OK
+  FAILURE|<code>|…       Auth failed
+  RESULT_BEGIN           Start of multi-line result
+  RESULT|<fields>        One course record (9 pipe-separated fields)
+  RESULT_END             End of results
+  RESULT_NONE|…          No matching records
+  STATUS_INFO|…          Server stats payload
+  OK|…                   Admin operation confirmed
+  ERROR|<code>|…         Bad request or unauthorized
+  INFO|…                 Informational text (used by HELP)
+  BYE                    Disconnect acknowledged
 
 Default Credentials
 ─────────────────────────────────────────────────────
@@ -853,7 +879,7 @@ Default Credentials
     def _do_login(self, user, pwd):
         def task():
             try:
-                resp = self.client.send(f"LOGIN {user} {pwd}")
+                resp = self.client.send(f"LOGIN|{user}|{pwd}")
                 if "SUCCESS" in resp:
                     self.logged_in = True
                     self.is_admin  = "admin" in resp

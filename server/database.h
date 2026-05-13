@@ -88,14 +88,18 @@ public:
     }
 
     // ---- Query ----
+    // Matches by course code, case-insensitive. Accepts an exact match OR a
+    // prefix (per protocol.md §5.2). Sample: QUERY|COMP returns every COMP*
+    // course; QUERY|COMP3003 returns only that code. Empty input matches none.
     std::vector<Course> queryByCode(const std::string& code) {
         std::vector<Course> res;
+        if (code.empty()) return res;
         std::string upperCode = code;
         for (auto& c : upperCode) c = toupper(c);
         for (auto& c : courses) {
             std::string uc = c.code;
             for (auto& ch : uc) ch = toupper(ch);
-            if (uc == upperCode) res.push_back(c);
+            if (uc.rfind(upperCode, 0) == 0) res.push_back(c);
         }
         return res;
     }

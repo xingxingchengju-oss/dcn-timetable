@@ -42,6 +42,7 @@ const state = {
   deleting: { code: "", section: "" },
   detailRow: null,
   connection: "connecting", // "connected" | "connecting" | "disconnected"
+  notifyTimer: null,        // v2.3 NOTIFY polling handle (setInterval id)
 };
 
 // =============================================================================
@@ -121,6 +122,7 @@ async function retryConnect() {
       renderWire("(connected)", lines.join("\n") + "\n");
       setConnectionState("connected");
       pollStatus();
+      startNotifyPolling();
       return true;
     } else {
       setConnectionState("disconnected");
@@ -131,6 +133,55 @@ async function retryConnect() {
     setConnectionState("disconnected");
     showToast("Cannot reach bridge — is bridge.py running on port 50002?", "error");
     return false;
+  }
+}
+
+// =============================================================================
+// v2.3 NOTIFY polling — see protocol.md §6
+// Server broadcasts NOTIFY|<op>|<code>|<section> on every admin write. The
+// bridge collects them per-session; this poller drains them every 2 seconds,
+// shows a toast, and refreshes the table if results are currently displayed.
+// =============================================================================
+
+function startNotifyPolling() {
+  if (state.notifyTimer) return;
+  state.notifyTimer = setInterval(pollNotifications, 2000);
+}
+
+function stopNotifyPolling() {
+  if (state.notifyTimer) {
+    clearInterval(state.notifyTimer);
+    state.notifyTimer = null;
+  }
+}
+
+async function pollNotifications() {
+  if (!state.sessionId || state.connection !== "connected") return;
+  let data;
+  try {
+    const resp = await fetch(`${BRIDGE}/api/notifications?session_id=${state.sessionId}`);
+    data = await resp.json();
+  } catch (_) {
+    return;  // network blip; the next tick will retry
+  }
+  if (!data || !data.ok || !data.notifications || !data.notifications.length) return;
+
+  let touched = false;
+  for (const line of data.notifications) {
+    // Format: NOTIFY|<op>|<code>|<section>
+    const parts = line.split("|");
+    if (parts.length < 4) continue;
+    const op = parts[1], code = parts[2], section = parts[3];
+    const verb = op === "ADDED"   ? "added"
+               : op === "UPDATED" ? "updated"
+               : op === "DELETED" ? "deleted"
+               : op.toLowerCase();
+    showToast(`Course ${verb}: ${code} / ${section}`, "info");
+    touched = true;
+  }
+  // If we have results on screen, refresh them so the user sees the change.
+  if (touched && state.rows.length > 0 && typeof refreshAfterMutation === "function") {
+    refreshAfterMutation();
   }
 }
 
@@ -234,6 +285,7 @@ async function silentReconnect() {
     const sidEl = document.getElementById("session-id");
     if (sidEl) sidEl.textContent = data.session_id ? data.session_id.slice(0, 4).toUpperCase() : "—";
     setConnectionState("connected");
+    startNotifyPolling();   // resume realtime updates after reconnect
     return true;
   } catch (_) {
     return false;
@@ -1087,6 +1139,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 // Graceful disconnect on tab close. URLSearchParams default Content-Type is
 // application/x-www-form-urlencoded, which bridge.py /api/disconnect handles.
 window.addEventListener("beforeunload", () => {
+  stopNotifyPolling();
   if (!state.sessionId) return;
   navigator.sendBeacon(
     `${BRIDGE}/api/disconnect`,

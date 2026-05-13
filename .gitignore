@@ -45,6 +45,9 @@ desktop.ini
 # Claude Code working directory
 .claude/
 
+# Internal audit / rehearsal notes — keep local, not submitted to GitHub
+docs/audit_report.md
+
 # Python (bridge.py runtime artifacts)
 __pycache__/
 *.pyc

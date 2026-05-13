@@ -63,6 +63,13 @@ std::string recvResponse() {
             // strip \r
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
+            // v2.3: Server-initiated NOTIFY broadcasts can interleave with
+            // command responses. Print them inline and do NOT mix them into
+            // `result` so the caller's parser sees a clean response.
+            if (line.rfind("NOTIFY|", 0) == 0) {
+                printYellow("[Server] " + line + "\n");
+                continue;
+            }
             result += line + "\n";
             if (isTerminalLine(line)) return result;
         }
@@ -123,21 +130,25 @@ void printResponse(const std::string& resp) {
             printYellow("--- End ---\n");
         }
         else if (line.substr(0, 12) == "STATUS_INFO|") {
-            // STATUS_INFO|active=N|total=M|uptime=HH:MM:SS
+            // STATUS_INFO|active=N|total=M|uptime=HH:MM:SS|cache_hits=N|cache_misses=N
             auto f = splitFields(line);
-            std::string active, total, uptime;
+            std::string active, total, uptime, ch, cm;
             for (size_t i = 1; i < f.size(); ++i) {
                 size_t eq = f[i].find('=');
                 if (eq == std::string::npos) continue;
                 std::string k = f[i].substr(0, eq);
                 std::string v = f[i].substr(eq + 1);
-                if      (k == "active") active = v;
-                else if (k == "total")  total  = v;
-                else if (k == "uptime") uptime = v;
+                if      (k == "active")        active = v;
+                else if (k == "total")         total  = v;
+                else if (k == "uptime")        uptime = v;
+                else if (k == "cache_hits")    ch     = v;
+                else if (k == "cache_misses")  cm     = v;
             }
             printCyan("[Server Status] Active=" + active +
                       "  Total=" + total +
-                      "  Uptime=" + uptime + "\n");
+                      "  Uptime=" + uptime +
+                      "  Cache hits/misses=" + (ch.empty() ? "0" : ch) +
+                      "/" + (cm.empty() ? "0" : cm) + "\n");
         }
         else if (line.substr(0, 12) == "RESULT_NONE|") {
             auto f = splitFields(line);
