@@ -387,7 +387,15 @@ static std::string dispatchRequest(const std::string& line, ClientSession& sessi
 
     // STATUS
     if (cmd == "STATUS") {
-        int  a = active_clients.load();
+        // `active` excludes the connection issuing this STATUS request itself
+        // — every accepted socket bumps active_clients in clientHandler, so the
+        // raw count always over-reports by 1 from the requester's point of view.
+        // Subtracting here matches user intuition: "how many *other* clients are
+        // connected." Notably this also makes the web UI's LIVE counter equal 1
+        // when only one browser tab is open (the bridge's STATUS probe is a
+        // separate short-lived TCP connection that would otherwise be counted).
+        int  a = active_clients.load() - 1;
+        if (a < 0) a = 0;
         long t = total_requests.load();
         long ch = g_cache_hits.load();
         long cm = g_cache_misses.load();

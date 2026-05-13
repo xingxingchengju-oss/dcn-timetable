@@ -202,9 +202,15 @@ public:
                     for (auto& ch : lf) ch = tolower(ch);
                     return lf.find(kw) != std::string::npos;
                 };
-                if (!contains(c.code) && !contains(c.title) &&
-                    !contains(c.instructor) && !contains(c.classroom) &&
-                    !contains(c.day) && !contains(c.time) && !contains(c.semester))
+                // Search across ALL 9 course fields so the sidebar hint
+                // "searches across all fields" actually holds. Without
+                // section + duration here, users typing "S1" or "2h" got
+                // zero hits despite the data clearly containing those values.
+                if (!contains(c.code)       && !contains(c.title)      &&
+                    !contains(c.section)    && !contains(c.instructor) &&
+                    !contains(c.day)        && !contains(c.time)       &&
+                    !contains(c.duration)   && !contains(c.classroom)  &&
+                    !contains(c.semester))
                     continue;
             }
             res.push_back(c);
