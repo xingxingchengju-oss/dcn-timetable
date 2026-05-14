@@ -368,15 +368,25 @@ function renderWire(req, resp) {
 function updateWireMode() {
   const el = document.getElementById("wire-mode");
   if (!el) return;
-  if (state.encryption) {
-    el.textContent = "ENC";
-    el.title = "XOR encryption on — payloads are XOR'd with the shared key and hex-encoded.";
-    el.classList.add("is-enc");
-  } else {
-    el.textContent = "PLAINTEXT";
-    el.title = "Encryption off — payloads are sent in cleartext. Toggle XOR Encryption in the sidebar.";
-    el.classList.remove("is-enc");
-  }
+  const want = state.encryption ? "ENC" : "PLAINTEXT";
+  // Hot path: badge already correct (renderWire calls this on every command).
+  // Skip the fade swap to keep idle traffic free of needless animation.
+  if (el.textContent === want) return;
+
+  // Cold path: state.encryption flipped — fade out, swap text + class, fade in.
+  // 140ms matches the .wire-mode opacity transition in style.css.
+  el.classList.add("is-swapping");
+  setTimeout(() => {
+    el.textContent = want;
+    if (state.encryption) {
+      el.title = "XOR encryption on — payloads are XOR'd with the shared key and hex-encoded.";
+      el.classList.add("is-enc");
+    } else {
+      el.title = "Encryption off — payloads are sent in cleartext. Toggle XOR Encryption in the sidebar.";
+      el.classList.remove("is-enc");
+    }
+    requestAnimationFrame(() => el.classList.remove("is-swapping"));
+  }, 140);
 }
 
 function toggleWire() {
@@ -402,7 +412,10 @@ function clearTable() {
 function setHeadline(desc, filters = [], rowCount = null, source = "live") {
   const h = document.getElementById("result-headline");
   if (rowCount !== null && desc) {
-    h.innerHTML = `${rowCount} ${rowCount === 1 ? "result" : "results"} <em>for "${escapeHtml(desc)}"</em>`;
+    // "N results" stays as the visual anchor in Playfair; the query tail drops
+    // into a muted mono caption beside it so the eye lands on the count first.
+    const noun = rowCount === 1 ? "result" : "results";
+    h.innerHTML = `${rowCount} ${noun}<span class="headline-q">for ${escapeHtml(desc)}</span>`;
   } else if (desc) {
     h.textContent = desc;
   } else {
@@ -443,8 +456,12 @@ function renderRows(rows) {
   }
   card.classList.remove("empty");
 
-  rows.forEach(r => {
+  rows.forEach((r, i) => {
     const tr = document.createElement("tr");
+    // Short stagger so the table animates in without delaying perceived speed.
+    // 14 rows finish in ~575ms; honoured under prefers-reduced-motion via CSS.
+    tr.className = "row-enter";
+    tr.style.setProperty("--row-delay", `${i * 25}ms`);
     tr.innerHTML = `
       <td class="col-code">${escapeHtml(r.code)}</td>
       <td>${escapeHtml(r.title)}</td>
@@ -526,7 +543,13 @@ function hashColor(code) {
 
 function renderWeek() {
   const grid = document.getElementById("week-grid");
+  const card = document.getElementById("week-card");
   grid.innerHTML = "";
+
+  // Empty state: replace the empty grid with the centred placeholder so the
+  // user doesn't see a blank Mon–Sun chart for a query that returned nothing.
+  if (card) card.classList.toggle("empty", state.rows.length === 0);
+  if (state.rows.length === 0) return;
 
   // Row 1: top-left corner + 7 day headers
   const corner = document.createElement("div");
@@ -559,7 +582,7 @@ function renderWeek() {
   }
 
   // Place events
-  state.rows.forEach(r => {
+  state.rows.forEach((r, i) => {
     const dayIdx = DAY_ORDER.indexOf(r.day);
     if (dayIdx < 0) return;
     const start = parseStartHour(r.time);
@@ -573,7 +596,8 @@ function renderWeek() {
     const colStart = 2 + dayIdx;
 
     const ev = document.createElement("div");
-    ev.className = `week-event color-${hashColor(r.code)}`;
+    ev.className = `week-event color-${hashColor(r.code)} row-enter`;
+    ev.style.setProperty("--row-delay", `${i * 30}ms`);
     ev.style.gridColumn = `${colStart} / ${colStart + 1}`;
     ev.style.gridRow = `${rowStart} / ${rowEnd}`;
     // Offset within the cell when start time isn't on the hour

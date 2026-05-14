@@ -179,6 +179,7 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
   border: 1px solid rgba(194, 148, 76, 0.25);
   border-radius: var(--radius-md);
   margin-bottom: 16px;
+  position: relative;  /* anchor for the sliding indicator below */
 }
 .mode-btn {
   border: none; background: transparent;
@@ -187,7 +188,15 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
   border-radius: var(--radius-sm);
   font-weight: 500; font-size: 13px;
   transition: all 0.15s ease;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
+.tab-icon {
+  width: 14px; height: 14px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.mode-btn.active .tab-icon,
+.view-btn.active .tab-icon { opacity: 1; }
 .mode-btn:hover { color: var(--sidebar-text); }
 .mode-btn.active {
   background: var(--accent);
@@ -316,6 +325,7 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
   font-size: 11px;
   font-weight: 500;
   color: var(--sidebar-text);
+  font-variant-numeric: tabular-nums;
 }
 .encryption-row {
   padding-top: 8px;
@@ -452,10 +462,19 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
   font-family: 'Playfair Display', Georgia, serif;
   font-size: 26px; font-weight: 600;
   margin: 0; letter-spacing: -0.005em;
+  font-variant-numeric: tabular-nums;
 }
-.main-title h1 em {
-  font-style: italic; font-weight: 400;
+/* Query-context tail inside the headline ("for semester = 2026S2").
+   Reads as a subdued mono caption next to the bold count so the eye lands
+   on the number first; replaces the previous italic Playfair flourish. */
+.headline-q {
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-weight: 400;
+  font-size: 14px;
   color: var(--main-muted);
+  margin-left: 8px;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 .filter-chips {
   display: flex; flex-wrap: wrap; gap: 6px;
@@ -491,11 +510,13 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
 
 /* ---- View toggle ---- */
 .view-toggle {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   background: var(--main-bg);
   border: 1px solid var(--main-border);
   border-radius: var(--radius-md);
   padding: 3px;
+  position: relative;  /* anchor for the sliding indicator below */
 }
 .view-btn {
   border: none; background: transparent;
@@ -504,6 +525,7 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
   border-radius: var(--radius-sm);
   font-size: 13px; font-weight: 500;
   transition: all 0.15s ease;
+  display: inline-flex; align-items: center; gap: 6px;
 }
 .view-btn:hover { color: var(--main-text); }
 .view-btn.active {
@@ -573,16 +595,34 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
 }
 .table-card.empty .empty-state { display: block; }
 .table-card.empty .result-table { display: none; }
-.empty-icon { font-size: 36px; margin-bottom: 8px; opacity: 0.6; }
+.empty-icon {
+  display: block;
+  width: 44px; height: 44px;
+  margin: 0 auto 10px;
+  color: var(--main-muted);
+  opacity: 0.55;
+}
 .empty-title { font-size: 15px; font-weight: 600; color: var(--main-text); margin-bottom: 4px; }
 .empty-sub { font-size: 13px; }
+.empty-sub code {
+  background: var(--main-bg);
+  padding: 1px 6px; border-radius: 4px;
+  border: 1px solid var(--main-border);
+  font-size: 0.9em;
+}
 
 /* Offline state — only shown when disconnected AND no rows */
 .offline-state { display: none; padding: 60px 20px; text-align: center; }
 .table-card.offline .offline-state { display: block; }
 .table-card.offline .empty-state { display: none; }
 .table-card.offline .result-table { display: none; }
-.offline-icon { font-size: 40px; margin-bottom: 10px; }
+.offline-icon {
+  display: block;
+  width: 48px; height: 48px;
+  margin: 0 auto 10px;
+  color: var(--danger);
+  opacity: 0.85;
+}
 .offline-title {
   font-size: 17px; font-weight: 600;
   color: var(--danger); margin-bottom: 6px;
@@ -628,7 +668,13 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
   box-shadow: var(--shadow-sm);
   padding: 0;
   overflow: auto;
+  position: relative;
 }
+/* Week empty state — replaces the empty grid when there are no rows.
+   Mirrors the .empty-state pattern from .table-card. */
+.week-empty { display: none; padding: 80px 20px; text-align: center; color: var(--main-muted); }
+.week-card.empty .week-empty { display: block; }
+.week-card.empty .week-grid  { display: none; }
 /*
   Week grid: 8 cols × 15 rows.
   Col 1 = time gutter (64px), cols 2-8 = Mon..Sun (1fr each).
@@ -782,9 +828,9 @@ code { font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.92em; 
 }
 .wire-drawer.collapsed {
   height: var(--wire-h-collapsed);
-  background: rgba(45, 47, 69, 0.92);
+  background: rgba(45, 47, 69, 0.88);
   color: #D8B5C0;
-  border-top: 2px solid var(--secondary);
+  border-top: 1px solid rgba(122, 136, 105, 0.55);
   cursor: pointer;
   transition: background 0.2s, height 0.25s ease;
 }
@@ -1150,6 +1196,85 @@ body[data-role="student"] [data-role-show="guest"],
 body[data-role="admin"]   [data-role-show="guest"] { display: none !important; }
 
 /* =========================================================================
+   MICRO-INTERACTIONS — segmented sliders, row entry, button depress, badge swap
+   ========================================================================= */
+
+/* Segmented-control sliding indicator. Both .mode-toggle and .view-toggle are
+   2-column grids; the indicator is a single pseudo-element that translates
+   horizontally when the active class moves between children.
+   Gated by @supports(selector(:has(*))) so older engines just fall back to
+   the existing background-on-.active styling (no broken layout). */
+@supports selector(:has(*)) {
+  .mode-toggle::before,
+  .view-toggle::before {
+    content: "";
+    position: absolute;
+    border-radius: var(--radius-sm);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* mode-toggle: padding 4px, gap 4px → button = (100% - 12px)/2 = (50% - 6px).
+     Slide distance = button width + gap = 100% of indicator + 4px. */
+  .mode-toggle::before {
+    top: 4px; bottom: 4px;
+    left: 4px;
+    width: calc(50% - 6px);
+    background: var(--accent);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+  .mode-toggle:has(.mode-btn:nth-child(2).active)::before {
+    transform: translateX(calc(100% + 4px));
+  }
+
+  /* view-toggle: padding 3px, no gap → button = (50% - 3px), translate = 100%. */
+  .view-toggle::before {
+    top: 3px; bottom: 3px;
+    left: 3px;
+    width: calc(50% - 3px);
+    background: var(--main-card-bg);
+    box-shadow: var(--shadow-sm);
+  }
+  .view-toggle:has(.view-btn:nth-child(2).active)::before {
+    transform: translateX(100%);
+  }
+
+  /* Buttons need to render above the indicator; the .active background that the
+     legacy rule paints is now redundant (the indicator handles the fill), so
+     suppress it to avoid a double-paint flash during the slide. */
+  .mode-toggle .mode-btn,
+  .view-toggle .view-btn { position: relative; z-index: 1; background: transparent; }
+  .mode-toggle .mode-btn.active { background: transparent; box-shadow: none; }
+  .view-toggle .view-btn.active { background: transparent; box-shadow: none; }
+}
+
+/* Result row + week-event entry stagger. Uses CSS variable --row-delay set
+   inline by JS (renderRows / renderWeek). 220ms per item × ~25–30ms stagger
+   keeps a 14-row list under 600ms total. `backwards` holds the from-state
+   during the delay so early-positioned rows don't flash at full opacity
+   before their turn. */
+@keyframes rowEnter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.row-enter {
+  animation: rowEnter 0.22s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: var(--row-delay, 0ms);
+}
+
+/* Tactile press: every primary/secondary button drops 1px on :active so the
+   user feels the click. Kept outside :hover so even keyboard activation feels
+   responsive. */
+.btn:not(:disabled):active { transform: translateY(1px); }
+
+/* Wire-mode badge crossfade. updateWireMode() toggles .is-swapping for 140ms
+   while replacing the textContent — opacity transition makes the swap feel
+   like a fade rather than a flicker. */
+.wire-mode { transition: opacity 0.14s ease, background 0.2s ease, color 0.2s ease; }
+.wire-mode.is-swapping { opacity: 0; }
+
+/* =========================================================================
    RESPONSIVE
    ========================================================================= */
 
@@ -1183,6 +1308,7 @@ body[data-role="admin"]   [data-role-show="guest"] { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-delay:    0ms    !important;   /* keep stagger-delayed rows from staying invisible */
     transition-duration: 0.01ms !important;
   }
 }
