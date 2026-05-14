@@ -393,6 +393,10 @@ function clearTable() {
   document.getElementById("result-body").innerHTML = "";
   state.rows = [];
   updateOfflineCard();
+  // Week view is rendered from state.rows independently of the table tbody, so
+  // it has to be redrawn here — otherwise a RESULT_NONE response leaves the
+  // previous query's events visible in the week grid.
+  if (state.view === "week") renderWeek();
 }
 
 function setHeadline(desc, filters = [], rowCount = null, source = "live") {
